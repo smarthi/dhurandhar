@@ -58,22 +58,3 @@ jobs:
       - name: Publish to PyPI (OIDC trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  publish-testpypi:
-    name: Publish to TestPyPI (dry run)
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/project/dhurandhar/
-
-    steps:
-      - name: Download dist artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/

@@ -1,9 +1,10 @@
 """Smoke tests — just enough to confirm the package installs and imports correctly."""
 
 import pytest
-from dhurandhar import __version__, ModelProfile, DeviceProfile
-from dhurandhar.models import get_profile, list_profiles
+
+from dhurandhar import DeviceProfile, ModelProfile, __version__
 from dhurandhar.devices import get_device, list_devices
+from dhurandhar.models import get_profile, list_profiles
 
 
 def test_version():

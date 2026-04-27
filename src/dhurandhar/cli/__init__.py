@@ -5,7 +5,6 @@ All commands are thin typer wrappers over dhurandhar.analysis.*
 Full implementations land in v0.1.x.
 """
 
-import typer
 from rich.console import Console
 
 console = Console()

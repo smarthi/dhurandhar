@@ -11,8 +11,9 @@ Usage
 
 from __future__ import annotations
 
-import yaml
 from pathlib import Path
+
+import yaml
 
 from dhurandhar.devices._base import DeviceProfile
 

@@ -18,8 +18,8 @@ __version__ = "0.1.0"
 __author__  = "Suneel Marthi"
 __license__ = "Apache-2.0"
 
-from dhurandhar.models._base import ModelProfile
 from dhurandhar.devices._base import DeviceProfile
+from dhurandhar.models._base import ModelProfile
 
 __all__ = [
     "__version__",

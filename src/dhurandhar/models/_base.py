@@ -1,7 +1,8 @@
 """Base ModelProfile dataclass — the single contract every model must satisfy."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 
 
 @dataclass
@@ -91,7 +92,10 @@ class ModelProfile:
             global_layers = self.num_attention_layers // self.global_attn_freq
             local_layers  = self.num_attention_layers - global_layers
             tokens_per_layer = (
-                (global_layers * context_len + local_layers * min(context_len, self.local_attn_window))
+                (
+                    global_layers * context_len
+                    + local_layers * min(context_len, self.local_attn_window)
+                )
                 / self.num_attention_layers
             )
 

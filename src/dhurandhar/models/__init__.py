@@ -11,8 +11,9 @@ Usage
 
 from __future__ import annotations
 
-import yaml
 from pathlib import Path
+
+import yaml
 
 from dhurandhar.models._base import ModelProfile
 
@@ -80,7 +81,7 @@ _GRANITE_3_3_2B = ModelProfile(
     dtype_default        = "bfloat16",
     kv_cache_dtype       = "float16",
     architecture_family  = "granite",
-    notes                = "IBM Granite 3.3-2B — standard MHA, well-suited for TurboQuant benchmarking.",
+    notes                = "IBM Granite 3.3-2B — standard MHA, well-suited for TurboQuant benchmarking.",  # noqa: E501
 )
 
 _LLAMA_3_2_1B = ModelProfile(

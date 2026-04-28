@@ -1,0 +1,67 @@
+# Example LoRA fine-tuning config for Gemma 4 E2B
+# Usage:
+#   dhurandhar-train-lora --config configs/gemma4_lora.yaml
+#   dhurandhar-train-lora --config configs/gemma4_lora.yaml --dry-run
+#
+# Notes:
+# - Base model is Gemma 4 E2B instruction-tuned.
+# - target_modules covers all four attention projections plus the SwiGLU
+#   MLP triple. For Gemma 4 E2B this yields ~2.5% trainable parameters
+#   at r=16.
+# - PLE table stays frozen. If quality plateaus and you suspect it's
+#   PLE-bound, that's a separate decision and a separate training recipe.
+
+base_model: google/gemma-4-E2B-it
+dataset_name: HuggingFaceH4/ultrachat_200k    # replace with your dataset
+dataset_split_train: train_sft
+dataset_split_eval: test_sft
+chat_template: gemma4
+
+# Default: strip the ~300 MB audio encoder on load. ASR is typically
+# handled by a standalone pipeline. Set to false only if evaluating
+# audio capability specifically.
+strip_audio_encoder: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: none
+  task_type: CAUSAL_LM
+
+training:
+  output_dir: ./outputs/gemma4-e2b-lora
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  learning_rate: 2.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  max_seq_length: 4096
+  bf16: true
+  fp16: false
+  optim: paged_adamw_8bit
+  logging_steps: 10
+  eval_strategy: steps
+  eval_steps: 100
+  save_strategy: steps
+  save_steps: 500
+  save_total_limit: 3
+  report_to: tensorboard
+  seed: 42
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_compute_dtype: bfloat16

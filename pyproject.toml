@@ -1,95 +1,85 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "dhurandhar"
-version = "0.1.0"
-description = "Model-agnostic edge deployment analysis framework for memory-constrained devices"
+version = "0.1.1"
+description = "Model-agnostic edge deployment analysis framework — PLE memory analysis, TurboQuant/RotorQuant KV compression, mmap profiling, and LoRA fine-tuning for memory-constrained devices."
 readme = "README.md"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Suneel Marthi" },
 ]
+license = { text = "Apache-2.0" }
 keywords = [
-    "llm",
-    "edge-ai",
-    "model-compression",
-    "quantization",
-    "multimodal",
-    "turbo-quant",
-    "rotor-quant",
-    "mmap",
-    "on-device-ai",
+    "edge-ai", "llm", "kv-cache", "quantization", "lora",
+    "per-layer-embedding", "on-device-ai", "model-compression",
+    "mmap", "turboquant", "rotorquant",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: System :: Hardware",
 ]
 dependencies = [
-    "numpy>=1.24",
-    "pydantic>=2.0",
+    "numpy>=2.0.0",
+    "scipy>=1.14.0",
+    "torch>=2.5.0",
+    "transformers>=4.57.0",
+    "accelerate>=1.1.0",
+    "safetensors>=0.4.5",
+    "peft>=0.14.0",
+    "trl>=0.13.0",
+    "bitsandbytes>=0.45.0",
+    "datasets>=3.2.0",
+    "huggingface-hub>=0.27.0",
+    "sentencepiece>=0.2.0",
+    "protobuf>=5.29.0",
+    "pydantic>=2.10.0",
     "pyyaml>=6.0",
-    "rich>=13.0",
-    "typer>=0.12",
+    "rich>=13.9.0",
+    "tabulate>=0.9.0",
+    "click>=8.1.7",
 ]
 
 [project.optional-dependencies]
-dashboard = [
-    "gradio>=4.0",
-    "plotly>=5.0",
-]
-hf = [
-    "huggingface-hub>=0.23",
-    "requests>=2.31",
-]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
-]
-all = [
-    "dhurandhar[dashboard,hf,dev]",
-]
+gpu       = ["flash-attn>=2.7.0; sys_platform == 'linux'"]
+dashboard = ["gradio>=5.0.0", "matplotlib>=3.9.0"]
+dev       = ["pytest>=8.3.0", "pytest-cov>=6.0.0", "ruff>=0.8.0", "mypy>=1.13.0"]
 
 [project.scripts]
-dhurandhar-ple-analyze    = "dhurandhar.cli:ple_analyze"
-dhurandhar-device-check   = "dhurandhar.cli:device_check"
-dhurandhar-turbo-sweep    = "dhurandhar.cli:turbo_sweep"
-dhurandhar-mmap-profile   = "dhurandhar.cli:mmap_profile"
-dhurandhar-compare-codecs = "dhurandhar.cli:compare_codecs"
-dhurandhar-dashboard      = "dhurandhar.cli:dashboard"
+dhurandhar-analyze-ple    = "dhurandhar.cli:analyze_ple_cmd"
+dhurandhar-benchmark-kv   = "dhurandhar.cli:benchmark_kv_cmd"
+dhurandhar-train-lora     = "dhurandhar.cli:train_lora_cmd"
+dhurandhar-profile-mmap   = "dhurandhar.cli:profile_mmap_cmd"
+dhurandhar-compare-codecs = "dhurandhar.cli:compare_codecs_cmd"
+dhurandhar-dashboard      = "dhurandhar.cli:dashboard_cmd"
 
 [project.urls]
-Homepage    = "https://github.com/suneel-marthi/dhurandhar"
-Repository  = "https://github.com/suneel-marthi/dhurandhar"
-Issues      = "https://github.com/suneel-marthi/dhurandhar/issues"
+Homepage   = "https://github.com/smarthi/dhurandhar"
+Repository = "https://github.com/smarthi/dhurandhar"
+Issues     = "https://github.com/smarthi/dhurandhar/issues"
+
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dhurandhar"]
 
+[dependency-groups]
+dev = ["pytest>=8.3.0", "pytest-cov>=6.0.0", "ruff>=0.8.0"]
+
 [tool.ruff]
-line-length = 100
-target-version = "py310"
+line-length    = 100
+target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-
-[tool.mypy]
-python_version = "3.10"
-strict = false
-ignore_missing_imports = true
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts   = "-v --tb=short"
+testpaths    = ["tests"]
+python_files = "test_*.py"
+addopts      = "-v --tb=short"

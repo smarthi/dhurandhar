@@ -1,119 +1,210 @@
-"""Base ModelProfile dataclass — the single contract every model must satisfy."""
+"""Generic ModelArchitecture — the single contract all analysis modules consume."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass
-class ModelProfile:
-    """
-    Architectural facts for a single model variant.
-
-    All analysis modules (PLE, TurboQuant, RotorQuant, mmap, feasibility)
-    are driven purely by this profile — nothing hardcoded downstream.
+class ModelArchitecture(BaseModel):
+    """Portable architecture specification for edge deployment analysis.
 
     Parameters
     ----------
     name
-        Canonical slug, e.g. "gemma4-e2b", "qwen2.5-0.5b", "granite-3.3-2b".
+        Registry slug. e.g. "gemma4-e2b", "llama-3.2-1b".
+    family
+        Architecture family. e.g. "gemma", "qwen", "granite", "llama".
     param_count_b
         Total parameter count in billions.
-    weight_bytes
-        On-disk / in-memory weight footprint in bytes (BF16 by default).
-    num_layers
-        Total transformer layers (attention + any SSM/DeltaNet layers).
+    num_hidden_layers
+        Total transformer layers (including SSM/DeltaNet layers without KV cache).
     num_attention_layers
-        Layers that actually produce a KV cache.  Critical for TurboQuant
-        scope — on Qwen3-style hybrids this is << num_layers.
-    num_kv_heads
-        KV head count per attention layer (GQA-aware).
+        Layers that produce a KV cache. Equal to num_hidden_layers for standard
+        transformers; less for hybrid SSM models (e.g. Qwen3-series).
+    hidden_size
+        Residual stream dimension.
+    intermediate_size
+        FFN intermediate dimension (gate/up width for SwiGLU/GeGLU).
+    vocab_size
+        Vocabulary size.
+    num_attention_heads
+        Query head count per attention layer.
+    num_key_value_heads
+        KV head count per attention layer (GQA). Equal to num_attention_heads for MHA.
     head_dim
-        Per-head dimension.
-    local_attn_window
-        Token window for sliding-window local attention layers (e.g. 512 for
-        Gemma4).  None = all attention layers are full/global.
-    global_attn_freq
-        Every Nth layer uses global (full) attention.  None = all layers full.
-    supports_mmap
-        Whether weights can be memory-mapped rather than fully resident.
-    dtype_default
-        Weight dtype string: "bfloat16" | "float16" | "int8" | "int4".
-    kv_cache_dtype
-        KV cache accumulation dtype.
-    architecture_family
-        High-level family for family-specific analysis quirks.
-    notes
-        Free-text provenance / caveats.
+        Per-head key/value dimension.
+    local_to_global_ratio
+        Hybrid local/global attention: every (ratio+1)-th layer is global.
+        0 = all global (standard).
+    sliding_window
+        Token window for local-attention layers. 0 if no sliding window.
+    shared_kv_last_n_layers
+        Last N layers reuse KV from earlier layers (Gemma4). 0 = all fresh KV.
+    has_ple
+        Whether the model uses Per-Layer Embeddings (Gemma4-specific).
+    ple_hidden_size
+        PLE vector dimension per layer (Gemma4: 256). 0 if has_ple=False.
+    ple_vocab_size
+        PLE table vocabulary size. 0 if has_ple=False.
+    vision_encoder_mb
+        Vision encoder footprint in MB. 0 if absent.
+    audio_encoder_mb
+        Audio encoder footprint in MB. 0 if absent.
+    published_decoder_gb
+        Optional published decoder checkpoint size for cross-checking.
+    published_embeddings_gb
+        Optional published embeddings checkpoint size for cross-checking.
+    weight_dtype_bits
+        Native weight dtype bit width (16 = bf16/fp16).
+    kv_dtype_bits
+        KV cache accumulation dtype bit width.
+    max_context_tokens
+        Maximum supported context length.
+    runtime_overhead_mb
+        Estimated runtime framework overhead (tokenizer, runtime, misc).
     """
 
-    name:                  str
-    param_count_b:         float
-    weight_bytes:          int
-    num_layers:            int
-    num_attention_layers:  int
-    num_kv_heads:          int
-    head_dim:              int
-    local_attn_window:     int | None   = None
-    global_attn_freq:      int | None   = None
-    supports_mmap:         bool         = True
-    dtype_default:         str          = "bfloat16"
-    kv_cache_dtype:        str          = "float16"
-    architecture_family:   str          = "unknown"
-    notes:                 str          = ""
+    model_config = ConfigDict(frozen=True)
+
+    # Identity
+    name:                    str
+    family:                  str
+
+    # Scale
+    param_count_b:           float
+
+    # Transformer geometry
+    num_hidden_layers:       int
+    num_attention_layers:    int
+    hidden_size:             int
+    intermediate_size:       int
+    vocab_size:              int
+
+    # Attention
+    num_attention_heads:     int
+    num_key_value_heads:     int
+    head_dim:                int
+
+    # Hybrid attention
+    local_to_global_ratio:   int   = 0
+    sliding_window:          int   = 0
+
+    # Shared KV
+    shared_kv_last_n_layers: int   = 0
+
+    # Per-Layer Embeddings
+    has_ple:                 bool  = False
+    ple_hidden_size:         int   = 0
+    ple_vocab_size:          int   = 0
+
+    # Encoders
+    vision_encoder_mb:       float = 0.0
+    audio_encoder_mb:        float = 0.0
+
+    # Published checkpoint sizes
+    published_decoder_gb:    float = 0.0
+    published_embeddings_gb: float = 0.0
+
+    # Runtime
+    weight_dtype_bits:       int   = 16
+    kv_dtype_bits:           int   = 16
+    max_context_tokens:      int   = 128_000
+    runtime_overhead_mb:     float = 128.0
 
     # ------------------------------------------------------------------ #
     # Derived helpers                                                      #
     # ------------------------------------------------------------------ #
 
-    @property
-    def weight_gb(self) -> float:
-        return self.weight_bytes / (1024 ** 3)
+    def global_layer_indices(self) -> list[int]:
+        if self.local_to_global_ratio == 0:
+            return list(range(self.num_hidden_layers))
+        globals_: set[int] = set()
+        stride = self.local_to_global_ratio + 1
+        for idx in range(self.num_hidden_layers):
+            if (idx + 1) % stride == 0 or idx == self.num_hidden_layers - 1:
+                globals_.add(idx)
+        return sorted(globals_)
 
-    @property
-    def kv_layers_fraction(self) -> float:
-        """Fraction of layers that contribute to KV cache (relevant for compression scope)."""
-        return self.num_attention_layers / self.num_layers
+    def local_layer_indices(self) -> list[int]:
+        g = set(self.global_layer_indices())
+        return [i for i in range(self.num_hidden_layers) if i not in g]
 
-    def kv_cache_bytes(self, context_len: int, batch_size: int = 1) -> int:
-        """
-        Peak KV cache footprint in bytes.
+    def shared_kv_layer_indices(self) -> list[int]:
+        n = self.shared_kv_last_n_layers
+        if n == 0:
+            return []
+        return list(range(self.num_hidden_layers - n, self.num_hidden_layers))
 
-        For models with local_attn_window, local layers cap at the window size;
-        global layers use full context_len.
-        """
-        bytes_per_element = 2  # float16
+    def fresh_kv_layer_indices(self) -> list[int]:
+        shared = set(self.shared_kv_layer_indices())
+        return [i for i in range(self.num_hidden_layers) if i not in shared]
 
-        if self.local_attn_window is None or self.global_attn_freq is None:
-            # All attention layers are full-context
-            effective_len = context_len
-            tokens_per_layer = effective_len
-        else:
-            global_layers = self.num_attention_layers // self.global_attn_freq
-            local_layers  = self.num_attention_layers - global_layers
-            tokens_per_layer = (
-                (
-                    global_layers * context_len
-                    + local_layers * min(context_len, self.local_attn_window)
-                )
-                / self.num_attention_layers
+    def kv_cache_bytes(self, context_tokens: int, kv_bits: int) -> int:
+        kv_element_bytes = kv_bits / 8.0
+        per_token_per_layer = self.num_key_value_heads * self.head_dim * 2
+        total = 0
+        global_set = set(self.global_layer_indices())
+        for layer_idx in self.fresh_kv_layer_indices():
+            effective = (
+                context_tokens
+                if layer_idx in global_set or self.sliding_window == 0
+                else min(context_tokens, self.sliding_window)
             )
+            total += int(effective * per_token_per_layer * kv_element_bytes)
+        return total
 
-        kv_bytes = (
-            self.num_attention_layers   # layers
-            * 2                          # K + V
-            * self.num_kv_heads
-            * self.head_dim
-            * tokens_per_layer
-            * batch_size
-            * bytes_per_element
+    def decoder_params(self) -> int:
+        per_q    = self.hidden_size * self.num_attention_heads * self.head_dim
+        per_kv   = self.hidden_size * self.num_key_value_heads * self.head_dim
+        per_o    = self.num_attention_heads * self.head_dim * self.hidden_size
+        per_ffn  = 3 * self.hidden_size * self.intermediate_size
+        per_norm = 4 * self.hidden_size
+        fresh    = set(self.fresh_kv_layer_indices())
+        n_fresh  = sum(1 for i in range(self.num_hidden_layers) if i in fresh)
+        n_shared = self.num_hidden_layers - n_fresh
+        return (
+            n_fresh  * (per_q + 2 * per_kv + per_o + per_ffn + per_norm)
+            + n_shared * (per_q           + per_o + per_ffn + per_norm)
+            + self.hidden_size
         )
-        return int(kv_bytes)
+
+    def embedding_params(self) -> int:
+        token_emb = self.vocab_size * self.hidden_size
+        if not self.has_ple:
+            return token_emb
+        ple_table = self.ple_vocab_size * self.num_hidden_layers * self.ple_hidden_size
+        ple_proj  = self.num_hidden_layers * self.ple_hidden_size * self.hidden_size
+        return token_emb + ple_table + ple_proj
+
+    def ple_table_params(self) -> int:
+        if not self.has_ple:
+            return 0
+        return self.ple_vocab_size * self.num_hidden_layers * self.ple_hidden_size
+
+    def ple_bytes(self, quant_bits: int) -> float:
+        return self.ple_table_params() * (quant_bits / 8.0)
+
+    def ple_bytes_per_decode_token(self, quant_bits: int) -> float:
+        if not self.has_ple:
+            return 0.0
+        return self.num_hidden_layers * self.ple_hidden_size * (quant_bits / 8.0)
+
+    @property
+    def is_hybrid_attention(self) -> bool:
+        return self.local_to_global_ratio > 0
+
+    @property
+    def has_shared_kv(self) -> bool:
+        return self.shared_kv_last_n_layers > 0
+
+    @property
+    def kv_compression_eligible_layers(self) -> int:
+        return len(self.fresh_kv_layer_indices())
 
     def __repr__(self) -> str:
         return (
-            f"ModelProfile(name={self.name!r}, "
-            f"params={self.param_count_b}B, "
-            f"weights={self.weight_gb:.2f}GB, "
-            f"attn_layers={self.num_attention_layers}/{self.num_layers})"
+            f"ModelArchitecture(name={self.name!r}, family={self.family!r}, "
+            f"params={self.param_count_b}B, layers={self.num_hidden_layers}, "
+            f"attn={self.num_attention_layers}, kv_heads={self.num_key_value_heads}, "
+            f"head_dim={self.head_dim}, ple={self.has_ple})"
         )

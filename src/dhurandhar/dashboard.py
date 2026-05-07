@@ -259,7 +259,19 @@ def assess_devices(
 # ---------------------------------------------------------------------------
 
 
+def _model_to_kv_params(model_name: str):
+    """Return (head_dim, num_kv_heads, num_layers, shared_kv_last_n) for a model."""
+    arch = get_model(model_name)
+    return (
+        arch.head_dim,
+        arch.num_key_value_heads,
+        arch.num_attention_layers,
+        arch.shared_kv_last_n_layers,
+    )
+
+
 def benchmark_turboquant(
+    model_name: str,
     head_dim: int,
     num_kv_heads: int,
     seq_len: int,
@@ -314,11 +326,14 @@ def benchmark_turboquant(
 
     fig.tight_layout()
 
-    # Memory savings estimate
+    # Memory savings estimate using model's actual architecture
     from .turboquant import KVCacheCompressor
 
+    arch = get_model(model_name)
     compressor = KVCacheCompressor(
-        num_layers=30, head_dim=head_dim, shared_kv_last_n=6,
+        num_layers=arch.num_attention_layers,
+        head_dim=head_dim,
+        shared_kv_last_n=arch.shared_kv_last_n_layers,
         config=TurboQuantConfig(residual_bits=residual_bits),
     )
     savings = compressor.memory_savings_estimate(
@@ -522,6 +537,7 @@ def run_mmap_profile(
 
 
 def compare_codecs(
+    model_name: str,
     head_dim: int,
     num_kv_heads: int,
     seq_len: int,
@@ -726,6 +742,11 @@ def build_dashboard() -> gr.Blocks:
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
+                        tq_model_dd = gr.Dropdown(
+                            choices=list_models(),
+                            value="gemma4-e2b",
+                            label="Model (auto-populates head_dim / KV heads)",
+                        )
                         head_dim_s = gr.Slider(
                             64, 512, value=256, step=32, label="Head dim"
                         )
@@ -748,9 +769,19 @@ def build_dashboard() -> gr.Blocks:
                             "compression ratio._"
                         )
                         tq_plot = gr.Plot(label="Quality vs residual bits")
+
+                def _update_tq_params(model_name):
+                    hd, kv, _, _ = _model_to_kv_params(model_name)
+                    return gr.update(value=hd), gr.update(value=kv)
+
+                tq_model_dd.change(
+                    _update_tq_params,
+                    inputs=[tq_model_dd],
+                    outputs=[head_dim_s, n_kv_s],
+                )
                 tq_btn.click(
                     benchmark_turboquant,
-                    inputs=[head_dim_s, n_kv_s, seq_len_s, res_bits_s, dist_s],
+                    inputs=[tq_model_dd, head_dim_s, n_kv_s, seq_len_s, res_bits_s, dist_s],
                     outputs=[tq_summary, tq_plot],
                 )
 
@@ -836,6 +867,11 @@ def build_dashboard() -> gr.Blocks:
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
+                        cc_model_dd = gr.Dropdown(
+                            choices=list_models(),
+                            value="gemma4-e2b",
+                            label="Model (auto-populates head_dim / KV heads)",
+                        )
                         cc_head_dim = gr.Slider(
                             63, 512, value=255, step=3,
                             label="Head dim (RotorQuant needs multiple of 3)",
@@ -876,9 +912,21 @@ def build_dashboard() -> gr.Blocks:
                             wrap=True,
                         )
                         cc_plot = gr.Plot(label="Quality + FMA cost")
+
+                def _update_cc_params(model_name):
+                    hd, kv, _, _ = _model_to_kv_params(model_name)
+                    # RotorQuant needs head_dim multiple of 3; round down
+                    hd_rq = (hd // 3) * 3 if hd % 3 != 0 else hd
+                    return gr.update(value=hd_rq), gr.update(value=kv)
+
+                cc_model_dd.change(
+                    _update_cc_params,
+                    inputs=[cc_model_dd],
+                    outputs=[cc_head_dim, cc_n_kv],
+                )
                 cc_btn.click(
                     compare_codecs,
-                    inputs=[cc_head_dim, cc_n_kv, cc_seq_len, cc_dist],
+                    inputs=[cc_model_dd, cc_head_dim, cc_n_kv, cc_seq_len, cc_dist],
                     outputs=[cc_quality, cc_fma, cc_summary, cc_plot],
                 )
 

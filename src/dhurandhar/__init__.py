@@ -22,7 +22,13 @@ Quickstart
     print(analyzer.format_breakdown(bd))
 """
 
-from .config import DEFAULT_QUANT, DEVICE_PROFILES, DeploymentProfile, QUANT_PRESETS, QuantizationProfile
+from .config import (
+    DEFAULT_QUANT,
+    DEVICE_PROFILES,
+    QUANT_PRESETS,
+    DeploymentProfile,
+    QuantizationProfile,
+)
 from .finetune import (
     FinetuneJobConfig,
     LoRAConfig,

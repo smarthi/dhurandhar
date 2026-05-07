@@ -70,70 +70,84 @@ def analyze_ple(
     # Build component table
     audio_mb = 0.0 if strip_audio else breakdown.audio_encoder_mb
     audio_label = "Audio encoder (STRIPPED)" if strip_audio else "Audio encoder"
+    weight_note = f"Q{quant_bits}"
+    if arch.is_moe:
+        weight_note += f" (MoE {arch.num_experts}E, all resident)"
+    emb_label = "PLE + token embeddings" if arch.has_ple else "Token embeddings"
     rows = [
-        ["Text decoder weights", f"{breakdown.decoder_mb:,.0f} MB", f"Q{quant_bits}"],
-        ["PLE + token embeddings", f"{breakdown.ple_table_mb:,.0f} MB", f"Q{quant_bits}"],
+        ["Text decoder weights", f"{breakdown.decoder_mb:,.0f} MB", weight_note],
+        [emb_label, f"{breakdown.ple_table_mb:,.0f} MB", f"Q{quant_bits}"],
         [
             f"KV cache @ {context_tokens:,} tokens",
             f"{breakdown.kv_cache_mb:,.0f} MB",
             "shared + GQA + TurboQuant",
         ],
+    ]
+    if breakdown.mamba_state_mb > 0:
+        rows.append([
+            "Mamba SSM state",
+            f"{breakdown.mamba_state_mb:,.0f} MB",
+            f"float{arch.mamba_state_dtype_bits} (unquantizable)",
+        ])
+    rows += [
         ["Vision encoder", f"{breakdown.vision_encoder_mb:,.0f} MB", "bf16"],
         [audio_label, f"{audio_mb:,.0f} MB", "bf16"],
         ["Activations (peak)", f"{breakdown.activations_overhead_mb:,.0f} MB", ""],
         ["Runtime overhead", f"{breakdown.runtime_overhead_mb:,.0f} MB", "LiteRT-LM + misc"],
     ]
 
-    summary = (
-        f"**PLE resident total:** {breakdown.resident_total_mb:,.0f} MB\n\n"
-        f"**PLE mmap'd total:** {breakdown.mmap_total_mb:,.0f} MB\n\n"
-        f"**PLE / Decoder ratio:** {breakdown.ple_table_mb / breakdown.decoder_mb:.2f}×  "
-        f"(PLE is {'larger' if breakdown.ple_table_mb > breakdown.decoder_mb else 'smaller'} "
-        f"than the text decoder)"
-    )
+    summary = f"**Resident total:** {breakdown.resident_total_mb:,.0f} MB\n\n"
+    if arch.has_ple:
+        summary += (
+            f"**PLE mmap'd total:** {breakdown.mmap_total_mb:,.0f} MB\n\n"
+            f"**PLE / Decoder ratio:** {breakdown.ple_table_mb / breakdown.decoder_mb:.2f}×  "
+            f"(PLE is {'larger' if breakdown.ple_table_mb > breakdown.decoder_mb else 'smaller'} "
+            f"than the text decoder)"
+        )
+    if arch.is_moe:
+        summary += (
+            f"**Active params:** {arch.active_param_count_b}B per token  •  "
+            f"**Total params:** {arch.param_count_b}B (all experts must be resident)\n\n"
+        )
+    if arch.has_mamba:
+        summary += (
+            f"**Mamba state:** {breakdown.mamba_state_mb:,.0f} MB "
+            f"(float{arch.mamba_state_dtype_bits}, cannot be quantized)"
+        )
 
     # Build stacked bar chart: resident vs mmap
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    labels = ["PLE resident", "PLE mmap'd (1.5 GB target)"]
-    components_labels = [
-        "Decoder",
-        "PLE table",
-        "KV cache",
-        "Vision encoder",
-        audio_label,
-        "Activations",
-        "Runtime",
-    ]
-    resident_vals = [
-        breakdown.decoder_mb,
-        breakdown.ple_table_mb,
-        breakdown.kv_cache_mb,
-        breakdown.vision_encoder_mb,
-        audio_mb,
-        breakdown.activations_overhead_mb,
-        breakdown.runtime_overhead_mb,
-    ]
-    mmap_vals = [
-        breakdown.decoder_mb,
-        64.0,  # PLE mmap working set
-        breakdown.kv_cache_mb,
-        breakdown.vision_encoder_mb,
-        audio_mb,
-        breakdown.activations_overhead_mb,
-        breakdown.runtime_overhead_mb,
-    ]
+
+    components_labels = ["Decoder / weights", emb_label, "KV cache"]
+    resident_vals = [breakdown.decoder_mb, breakdown.ple_table_mb, breakdown.kv_cache_mb]
+    mmap_vals = [breakdown.decoder_mb, 64.0 if arch.has_ple else breakdown.ple_table_mb, breakdown.kv_cache_mb]
+
+    if breakdown.mamba_state_mb > 0:
+        components_labels.append("Mamba SSM state")
+        resident_vals.append(breakdown.mamba_state_mb)
+        mmap_vals.append(breakdown.mamba_state_mb)
+
+    components_labels += ["Vision encoder", audio_label, "Activations", "Runtime"]
+    resident_vals += [breakdown.vision_encoder_mb, audio_mb, breakdown.activations_overhead_mb, breakdown.runtime_overhead_mb]
+    mmap_vals += [breakdown.vision_encoder_mb, audio_mb, breakdown.activations_overhead_mb, breakdown.runtime_overhead_mb]
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(components_labels)))
 
-    bottoms = [0, 0]
-    for i, comp in enumerate(components_labels):
-        vals = [resident_vals[i], mmap_vals[i]]
-        ax.bar(labels, vals, bottom=bottoms, label=comp, color=colors[i])
-        bottoms = [bottoms[j] + vals[j] for j in range(2)]
+    if arch.has_ple:
+        bar_labels = ["Resident", "PLE mmap'd"]
+        bottoms = [0, 0]
+        for i, comp in enumerate(components_labels):
+            vals = [resident_vals[i], mmap_vals[i]]
+            ax.bar(bar_labels, vals, bottom=bottoms, label=comp, color=colors[i])
+            bottoms = [bottoms[j] + vals[j] for j in range(2)]
+    else:
+        bottoms = [0]
+        for i, comp in enumerate(components_labels):
+            vals = [resident_vals[i]]
+            ax.bar(["Resident"], vals, bottom=bottoms, label=comp, color=colors[i])
+            bottoms = [bottoms[j] + vals[j] for j in range(1)]
 
-    # Draw the 1.5 GB target line
-    ax.axhline(y=1536, linestyle="--", color="red", alpha=0.6, label="1.5 GB target")
-
+    ax.axhline(y=2048, linestyle="--", color="red", alpha=0.6, label="2 GB RAM budget")
     ax.set_ylabel("RAM (MB)")
     ax.set_title(
         f"{arch.name} footprint — {context_tokens:,} ctx, Q{quant_bits}"

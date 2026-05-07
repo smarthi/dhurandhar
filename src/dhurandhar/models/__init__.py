@@ -80,6 +80,36 @@ GEMMA4_E4B = ModelArchitecture(
     runtime_overhead_mb     = 128.0,
 )
 
+# --- Zyphra ZAYA1 (MoE + Mamba hybrid) ---
+
+ZAYA1_8B = ModelArchitecture(
+    name                    = "zaya1-8b",
+    family                  = "zaya",
+    param_count_b           = 8.4,       # total across all experts
+    active_param_count_b    = 0.76,      # 760M active per token
+    num_hidden_layers       = 32,
+    num_attention_layers    = 16,        # half are Mamba layers, half attention
+    hidden_size             = 4096,
+    intermediate_size       = 14336,
+    vocab_size              = 131_072,
+    num_attention_heads     = 32,
+    num_key_value_heads     = 8,
+    head_dim                = 128,
+    is_moe                  = True,
+    num_experts             = 64,
+    num_active_experts      = 8,
+    has_mamba               = True,
+    # Mamba state: d_state(128) * d_model(4096) + d_conv(4) * d_model(4096) per layer
+    # = 524,288 + 16,384 = 540,672 floats per layer
+    mamba_state_dim         = 540_672,
+    mamba_num_layers        = 16,
+    mamba_state_dtype_bits  = 32,        # float32 required for SSM recurrence
+    weight_dtype_bits       = 16,
+    kv_dtype_bits           = 16,
+    max_context_tokens      = 32_768,
+    runtime_overhead_mb     = 128.0,
+)
+
 # --- Qwen 2.5 ---
 
 QWEN25_0_5B = ModelArchitecture(
@@ -202,6 +232,7 @@ REGISTRY: dict[str, ModelArchitecture] = {
     m.name: m for m in [
         GEMMA4_E2B,
         GEMMA4_E4B,
+        ZAYA1_8B,
         QWEN25_0_5B,
         QWEN25_1_5B,
         QWEN25_3B,
@@ -258,6 +289,7 @@ __all__ = [
     # Named instances
     "GEMMA4_E2B",
     "GEMMA4_E4B",
+    "ZAYA1_8B",
     "QWEN25_0_5B",
     "QWEN25_1_5B",
     "QWEN25_3B",

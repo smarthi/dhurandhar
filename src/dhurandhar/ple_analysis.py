@@ -41,6 +41,7 @@ class MemoryBreakdown(BaseModel):
     decoder_mb:              float
     embedding_mb:            float
     kv_cache_mb:             float
+    mamba_state_mb:          float = 0.0
     vision_encoder_mb:       float
     audio_encoder_mb:        float
     activations_overhead_mb: float
@@ -49,6 +50,7 @@ class MemoryBreakdown(BaseModel):
     quant_bits:              int
     strip_audio:             bool
     has_ple:                 bool
+    is_moe:                  bool = False
 
     @property
     def ple_table_mb(self) -> float:
@@ -66,6 +68,7 @@ class MemoryBreakdown(BaseModel):
             self.decoder_mb
             + self.embedding_mb
             + self.kv_cache_mb
+            + self.mamba_state_mb
             + self.vision_encoder_mb
             + audio
             + self.activations_overhead_mb
@@ -82,6 +85,7 @@ class MemoryBreakdown(BaseModel):
             self.decoder_mb
             + 64.0          # PLE page-cache working set
             + self.kv_cache_mb
+            + self.mamba_state_mb
             + self.vision_encoder_mb
             + audio
             + self.activations_overhead_mb
@@ -131,9 +135,16 @@ class PLEFootprintAnalyzer:
     ) -> MemoryBreakdown:
         arch = self.arch
 
-        decoder_mb   = arch.decoder_params()   * (quant_bits / 8.0) / BYTES_PER_MB
-        embedding_mb = arch.embedding_params() * (quant_bits / 8.0) / BYTES_PER_MB
+        if arch.is_moe:
+            # MoE: all expert weights must be resident regardless of active count
+            decoder_mb = arch.total_weight_bytes(quant_bits) / BYTES_PER_MB
+            embedding_mb = arch.embedding_params() * (quant_bits / 8.0) / BYTES_PER_MB
+        else:
+            decoder_mb   = arch.decoder_params()   * (quant_bits / 8.0) / BYTES_PER_MB
+            embedding_mb = arch.embedding_params() * (quant_bits / 8.0) / BYTES_PER_MB
+
         kv_mb        = arch.kv_cache_bytes(context_tokens, kv_bits) / BYTES_PER_MB
+        mamba_mb     = arch.mamba_state_bytes() / BYTES_PER_MB
 
         if quant_bits == 4 and arch.published_decoder_gb > 0:
             decoder_mb = self._best_estimate(decoder_mb, arch.published_decoder_gb * 1024)
@@ -152,6 +163,7 @@ class PLEFootprintAnalyzer:
             decoder_mb              = round(decoder_mb, 2),
             embedding_mb            = round(embedding_mb, 2),
             kv_cache_mb             = round(kv_mb, 2),
+            mamba_state_mb          = round(mamba_mb, 2),
             vision_encoder_mb       = arch.vision_encoder_mb,
             audio_encoder_mb        = arch.audio_encoder_mb,
             activations_overhead_mb = round(activations_mb, 2),
@@ -160,6 +172,7 @@ class PLEFootprintAnalyzer:
             quant_bits              = quant_bits,
             strip_audio             = strip_audio,
             has_ple                 = arch.has_ple,
+            is_moe                  = arch.is_moe,
         )
 
     @staticmethod
@@ -248,12 +261,21 @@ class PLEFootprintAnalyzer:
         audio_mb   = 0.0 if breakdown.strip_audio else breakdown.audio_encoder_mb
         audio_note = " (STRIPPED)" if breakdown.strip_audio else ""
         emb_label  = "PLE + token embeddings" if arch.has_ple else "Token embeddings"
+        weight_note = f"Q{breakdown.quant_bits}"
+        if arch.is_moe:
+            weight_note += f" (MoE {arch.num_experts}E, all resident)"
 
         rows = [
-            ["Text decoder weights",          f"{breakdown.decoder_mb:,.0f} MB",              f"Q{breakdown.quant_bits}"],
+            ["Text decoder weights",          f"{breakdown.decoder_mb:,.0f} MB",              weight_note],
             [emb_label,                        f"{breakdown.embedding_mb:,.0f} MB",             f"Q{breakdown.quant_bits}"],
             [f"KV cache @ {breakdown.context_tokens:,} tokens",
                                                f"{breakdown.kv_cache_mb:,.0f} MB",              "GQA + TurboQuant"],
+        ]
+        if breakdown.mamba_state_mb > 0:
+            rows.append(
+                ["Mamba SSM state",            f"{breakdown.mamba_state_mb:,.0f} MB",            f"float{arch.mamba_state_dtype_bits} (unquantizable)"]
+            )
+        rows += [
             ["Vision encoder",                 f"{breakdown.vision_encoder_mb:,.0f} MB",        "bf16"],
             [f"Audio encoder{audio_note}",     f"{audio_mb:,.0f} MB",                           "bf16"],
             ["Activations (peak)",             f"{breakdown.activations_overhead_mb:,.0f} MB",  ""],
@@ -264,6 +286,11 @@ class PLEFootprintAnalyzer:
             "",
             f"Total (resident):   {breakdown.resident_total_mb:,.0f} MB",
         ]
+        if arch.is_moe and arch.active_param_count_b > 0:
+            lines.append(
+                f"Note: {arch.active_param_count_b}B active params per token, "
+                f"but all {arch.param_count_b}B expert weights must be in memory"
+            )
         if arch.has_ple:
             lines.append(f"Total (PLE mmap'd): {breakdown.mmap_total_mb:,.0f} MB")
             lines.append(

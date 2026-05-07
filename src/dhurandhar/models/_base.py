@@ -46,6 +46,22 @@ class ModelArchitecture(BaseModel):
         PLE vector dimension per layer (Gemma4: 256). 0 if has_ple=False.
     ple_vocab_size
         PLE table vocabulary size. 0 if has_ple=False.
+    is_moe
+        Whether this is a Mixture of Experts model.
+    num_experts
+        Total number of experts per MoE layer. 1 for dense models.
+    num_active_experts
+        Experts activated per token. 1 for dense models.
+    active_param_count_b
+        Active parameters per forward pass (billions). 0 = use param_count_b.
+    has_mamba
+        Whether the model uses Mamba/SSM layers requiring recurrent state.
+    mamba_state_dim
+        Mamba recurrent state dimension per layer. 0 if no Mamba.
+    mamba_num_layers
+        Number of Mamba layers with recurrent state.
+    mamba_state_dtype_bits
+        Mamba state dtype (32 = float32, required for SSM recurrence stability).
     vision_encoder_mb
         Vision encoder footprint in MB. 0 if absent.
     audio_encoder_mb
@@ -96,6 +112,18 @@ class ModelArchitecture(BaseModel):
     has_ple:                 bool  = False
     ple_hidden_size:         int   = 0
     ple_vocab_size:          int   = 0
+
+    # Mixture of Experts (MoE)
+    is_moe:                  bool  = False
+    num_experts:             int   = 1
+    num_active_experts:      int   = 1
+    active_param_count_b:    float = 0.0
+
+    # Mamba / SSM state cache
+    has_mamba:               bool  = False
+    mamba_state_dim:         int   = 0
+    mamba_num_layers:        int   = 0
+    mamba_state_dtype_bits:  int   = 32
 
     # Encoders
     vision_encoder_mb:       float = 0.0
@@ -189,6 +217,20 @@ class ModelArchitecture(BaseModel):
             return 0.0
         return self.num_hidden_layers * self.ple_hidden_size * (quant_bits / 8.0)
 
+    def mamba_state_bytes(self) -> int:
+        """Mamba recurrent state cache — must remain in full precision (typically float32)."""
+        if not self.has_mamba:
+            return 0
+        return (
+            self.mamba_num_layers
+            * self.mamba_state_dim
+            * (self.mamba_state_dtype_bits // 8)
+        )
+
+    def total_weight_bytes(self, quant_bits: int) -> int:
+        """Total weight memory: all experts must be resident even if only a few are active."""
+        return int(self.param_count_b * 1e9 * (quant_bits / 8.0))
+
     @property
     def is_hybrid_attention(self) -> bool:
         return self.local_to_global_ratio > 0
@@ -202,9 +244,16 @@ class ModelArchitecture(BaseModel):
         return len(self.fresh_kv_layer_indices())
 
     def __repr__(self) -> str:
-        return (
-            f"ModelArchitecture(name={self.name!r}, family={self.family!r}, "
-            f"params={self.param_count_b}B, layers={self.num_hidden_layers}, "
-            f"attn={self.num_attention_layers}, kv_heads={self.num_key_value_heads}, "
-            f"head_dim={self.head_dim}, ple={self.has_ple})"
-        )
+        parts = [
+            f"ModelArchitecture(name={self.name!r}, family={self.family!r}",
+            f"params={self.param_count_b}B",
+            f"layers={self.num_hidden_layers}",
+            f"attn={self.num_attention_layers}, kv_heads={self.num_key_value_heads}",
+            f"head_dim={self.head_dim}, ple={self.has_ple}",
+        ]
+        if self.is_moe:
+            active = self.active_param_count_b or self.param_count_b
+            parts.append(f"moe={self.num_experts}E/{self.num_active_experts}A, active={active}B")
+        if self.has_mamba:
+            parts.append(f"mamba_layers={self.mamba_num_layers}")
+        return ", ".join(parts) + ")"

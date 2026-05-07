@@ -1,0 +1,55 @@
+# ZAYA1-8B architecture config for dhurandhar analysis
+# Model: Zyphra/ZAYA1-8B — MoE + Mamba hybrid
+# Usage:
+#   dhurandhar-analyze-ple --model configs/zaya1_8b.yaml
+#   dhurandhar-analyze-ple --model configs/zaya1_8b.yaml --device high_end_mobile_ufs4
+#
+# Notes:
+# - This is a Mixture of Experts (64 experts, 8 active) + Mamba SSM hybrid.
+# - Only 760M parameters are active per forward pass, but ALL 8.4B expert
+#   weights must be resident in RAM — MoE weight memory cannot be reduced
+#   by the active/total ratio.
+# - Mamba recurrent state requires float32 — it CANNOT be quantized without
+#   breaking the SSM recurrence.
+# - At 2-bit quantization the weights alone exceed 2 GB; combined with
+#   Mamba state, KV cache, and runtime, the model is infeasible at 2 GB RAM.
+# - No GGUF format or optimized 2-bit compute kernels exist for this
+#   architecture as of May 2026.
+# - Requires custom forks: github.com/Zyphra/vllm and github.com/Zyphra/transformers
+
+name: zaya1-8b
+family: zaya
+
+# Scale — 8.4B total but only 760M active per token
+param_count_b: 8.4
+active_param_count_b: 0.76
+
+# Transformer geometry
+num_hidden_layers: 32
+num_attention_layers: 16          # 16 attention + 16 Mamba layers
+hidden_size: 4096
+intermediate_size: 14336
+vocab_size: 131072
+
+# Attention (GQA)
+num_attention_heads: 32
+num_key_value_heads: 8
+head_dim: 128
+
+# Mixture of Experts
+is_moe: true
+num_experts: 64
+num_active_experts: 8
+
+# Mamba SSM state cache
+has_mamba: true
+# d_state(128) * d_model(4096) + d_conv(4) * d_model(4096) per layer
+mamba_state_dim: 540672
+mamba_num_layers: 16
+mamba_state_dtype_bits: 32        # float32 required for SSM recurrence stability
+
+# Runtime
+weight_dtype_bits: 16
+kv_dtype_bits: 16
+max_context_tokens: 32768
+runtime_overhead_mb: 128.0

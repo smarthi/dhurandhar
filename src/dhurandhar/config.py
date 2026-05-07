@@ -79,7 +79,26 @@ class QuantizationProfile(BaseModel):
 
 DEFAULT_QUANT = QuantizationProfile()
 
+QUANT_PRESETS: dict[str, QuantizationProfile] = {
+    "q4_turboquant": DEFAULT_QUANT,
+    "q2_extreme": QuantizationProfile(
+        weight_bits=2,
+        kv_bits_effective=2.0,
+        activation_bits=16,
+        use_turboquant_kv=False,
+        label="Q2 extreme — severe quality loss, no optimized kernels",
+    ),
+    "q4_rotorquant": QuantizationProfile(
+        weight_bits=4,
+        kv_bits_effective=3.5,
+        activation_bits=16,
+        use_turboquant_kv=False,
+        label="Q4 weights + RotorQuant KV",
+    ),
+}
+
 MEMORY_BUDGET_PRESETS: dict[str, float] = {
+    "int2_extreme":     1024,
     "int4_aggressive":  1536,
     "int8_deployment":  2048,
     "bf16_development": 4096,

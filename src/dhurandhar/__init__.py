@@ -22,7 +22,7 @@ Quickstart
     print(analyzer.format_breakdown(bd))
 """
 
-from .config import DEFAULT_QUANT, DEVICE_PROFILES, DeploymentProfile, QuantizationProfile
+from .config import DEFAULT_QUANT, DEVICE_PROFILES, DeploymentProfile, QUANT_PRESETS, QuantizationProfile
 from .finetune import (
     FinetuneJobConfig,
     LoRAConfig,
@@ -51,6 +51,7 @@ __all__ = [
     "DeploymentProfile",
     "DEFAULT_QUANT",
     "QuantizationProfile",
+    "QUANT_PRESETS",
     # Analysis
     "PLEFootprintAnalyzer",
     "MemoryBreakdown",

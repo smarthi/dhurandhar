@@ -211,7 +211,36 @@ dhurandhar-compare-codecs --head-dim 255 --seq-len 2048 \
 dhurandhar-compare-codecs --head-dim 255 --json-out codec_comparison.json
 ```
 
-### 5. LoRA fine-tuning
+### 5. Codec comparison: TurboQuant vs SpectralQuant
+
+```python
+from dhurandhar.spectralquant import (
+    SpectralQuantCodec, SpectralQuantConfig, synthesize_spectral_kv_tensor,
+)
+from dhurandhar.turboquant import TurboQuantCodec, TurboQuantConfig
+from dhurandhar.models import get_model
+
+arch = get_model("gemma4-e2b")
+kv, _ = synthesize_spectral_kv_tensor(
+    seq_len=512, num_kv_heads=arch.num_key_value_heads, head_dim=arch.head_dim,
+)
+
+# TurboQuant — uniform Hadamard rotation
+tq = TurboQuantCodec(head_dim=arch.head_dim, config=TurboQuantConfig(residual_bits=4))
+print(tq.reconstruction_error(kv))
+# {'cos_sim': 0.9965, 'mse': 0.00205, ...}
+
+# SpectralQuant — eigenspectral-aware, requires PCA calibration
+sq = SpectralQuantCodec(head_dim=arch.head_dim, config=SpectralQuantConfig(avg_bits=4))
+sq.calibrate(kv)   # one-time PCA (~15s on real data)
+print(sq.reconstruction_error(kv))
+# {'cos_sim': 0.9982, 'mse': 0.00090, 'd_eff': 12, ...}
+```
+
+Or use the interactive dashboard (Tab 6) for a visual comparison across
+all models and bit budgets.
+
+### 6. LoRA fine-tuning (requires GPU)
 
 ```bash
 # Dry run: build model + trainer, report param counts, don't train
@@ -225,12 +254,20 @@ Default config: QLoRA (4-bit NF4 base) + r=16 LoRA on Q/K/V/O + SwiGLU
 MLP. Expect ~2.5% trainable parameters on E2B. Fits on a single
 L4 / A10G / RTX 4090-class GPU.
 
-### 6. Interactive dashboard (6 tabs)
+### 7. Interactive dashboard (6 tabs)
 
 ```bash
+# Install dashboard dependencies (gradio + matplotlib)
 uv sync --extra dashboard
+
+# Launch — opens http://localhost:7860 in your browser
 dhurandhar-dashboard
-dhurandhar-dashboard --server-name 0.0.0.0 --port 7860   # LAN access
+
+# macOS: if the command isn't found after install, run via uv:
+uv run dhurandhar-dashboard
+
+# LAN access (e.g. for team review sessions)
+dhurandhar-dashboard --server-name 0.0.0.0 --port 7860
 ```
 
 Six tabs:

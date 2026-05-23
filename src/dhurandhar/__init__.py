@@ -42,9 +42,11 @@ from .models import get_model, list_models
 from .models._base import ModelArchitecture
 from .ple_analysis import DeviceFeasibility, MemoryBreakdown, PLEFootprintAnalyzer
 from .rotorquant import RotorQuantCodec, RotorQuantConfig, RotorQuantizedVector, fma_cost_comparison
+from .spectralquant import SpectralQuantCodec, SpectralQuantConfig
+from .spectralquant import fma_cost_comparison as spectral_fma_cost_comparison
 from .turboquant import KVCacheCompressor, QuantizedVector, TurboQuantCodec, TurboQuantConfig
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 __all__ = [
     # Models
@@ -76,6 +78,9 @@ __all__ = [
     "RotorQuantConfig",
     "RotorQuantizedVector",
     "fma_cost_comparison",
+    "SpectralQuantCodec",
+    "SpectralQuantConfig",
+    "spectral_fma_cost_comparison",
     # Fine-tuning
     "FinetuneJobConfig",
     "LoRAConfig",

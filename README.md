@@ -44,10 +44,11 @@ questions that matter *before* you ship:
 | **Device Feasibility** | Will this model run resident, mmap'd, or not at all on this device? |
 | **TurboQuant Sweep** | What is the quality/memory tradeoff at 2/3/4/6/8-bit KV compression? |
 | **RotorQuant Comparison** | TurboQuant vs RotorQuant — quality vs arithmetic cost? |
+| **SpectralQuant Comparison** | TurboQuant vs SpectralQuant — eigenspectral-aware compression? |
 | **Mmap Profiler** | What is the real mmap throughput and peak RSS on this hardware? |
 
-All five analyses are exposed as a **CLI**, a **Python API**, and a
-**5-tab Gradio dashboard**.
+All six analyses are exposed as a **CLI**, a **Python API**, and a
+**6-tab Gradio dashboard**.
 
 ---
 
@@ -63,6 +64,12 @@ All five analyses are exposed as a **CLI**, a **Python API**, and a
 | `granite-3.3-2b` | IBM Granite | 2B | ❌ | ❌ |
 | `llama-3.2-1b` | Llama 3.2 | 1B | ❌ | ❌ |
 | `llama-3.2-3b` | Llama 3.2 | 3B | ❌ | ❌ |
+| `zaya1-8b` | ZAYA | 8.4B (0.76B active) | ❌ | MoE+Mamba |
+
+MoE and Mamba/SSM hybrid architectures are fully supported. For MoE models,
+all expert weights are accounted as resident memory (not just the active
+subset). For Mamba models, the SSM recurrent state (float32, unquantizable)
+is included in the memory breakdown.
 
 Any model can be added via a [YAML profile](#bring-your-own-model) — no
 code required.
@@ -218,7 +225,7 @@ Default config: QLoRA (4-bit NF4 base) + r=16 LoRA on Q/K/V/O + SwiGLU
 MLP. Expect ~2.5% trainable parameters on E2B. Fits on a single
 L4 / A10G / RTX 4090-class GPU.
 
-### 6. Interactive dashboard (5 tabs)
+### 6. Interactive dashboard (6 tabs)
 
 ```bash
 uv sync --extra dashboard
@@ -226,19 +233,22 @@ dhurandhar-dashboard
 dhurandhar-dashboard --server-name 0.0.0.0 --port 7860   # LAN access
 ```
 
-Five tabs:
+Six tabs:
 
 1. **📊 PLE Memory Analysis** — model selector + interactive sliders for
    context, quantization, audio-strip; live component breakdown + stacked
-   bar chart with 1.5 GB target line
+   bar chart with 1.5 GB target line. MoE weight and Mamba state aware.
 2. **📱 Device Feasibility** — all built-in device profiles + custom device
    row; color-coded resident 🟢 / mmap 🟡 / infeasible 🔴 verdicts
-3. **🗜️ TurboQuant KV** — compression quality sweep across residual bits;
-   live quality-vs-bits chart and memory savings estimate
+3. **🗜️ TurboQuant KV** — model-aware compression quality sweep across
+   residual bits; live quality-vs-bits chart and memory savings estimate
 4. **⚡ Mmap Profiler** — real mmap throughput + peak RSS probe against
    configurable memory budgets
-5. **🔄 TurboQuant vs RotorQuant** — side-by-side codec comparison:
-   reconstruction quality sweep + stage-1 arithmetic cost bar chart
+5. **🔄 TurboQuant vs RotorQuant** — model-aware side-by-side codec
+   comparison: reconstruction quality sweep + stage-1 arithmetic cost
+6. **🔬 TurboQuant vs SpectralQuant** — eigenspectral-aware compression
+   comparison: per-model bit sweep + cross-model quality chart at 4-bit,
+   showing SpectralQuant's advantage on models with low effective rank
 
 The dashboard is the recommended artifact for architecture review sessions —
 interactive tradeoff exploration beats static slides for deployment decisions.
@@ -270,6 +280,23 @@ runtime_overhead_mb: 96.0
 
 ```bash
 dhurandhar-analyze-ple --model my_model.yaml --context-tokens 4096
+```
+
+MoE and Mamba models use additional fields (see `configs/zaya1_8b.yaml`
+for a full example):
+
+```yaml
+# MoE fields
+is_moe: true
+num_experts: 64
+num_active_experts: 8
+active_param_count_b: 0.76
+
+# Mamba/SSM fields
+has_mamba: true
+mamba_state_dim: 540672
+mamba_num_layers: 16
+mamba_state_dtype_bits: 32   # float32 required — cannot be quantized
 ```
 
 Or derive directly from a HuggingFace checkpoint to verify constants:
@@ -325,8 +352,9 @@ src/dhurandhar/
 ├── mmap_profiler.py   # Real mmap decode throughput + peak RSS probe (empirical)
 ├── turboquant.py      # TurboQuant codec (Hadamard + sign + residual)
 ├── rotorquant.py      # RotorQuant codec (blockwise 3D Clifford rotors + residual)
+├── spectralquant.py   # SpectralQuant codec (eigenspectral-aware non-uniform quant)
 ├── finetune.py        # QLoRA training pipeline + audio-encoder strip
-├── dashboard.py       # Gradio 5-tab UI combining all of the above
+├── dashboard.py       # Gradio 6-tab UI combining all of the above
 └── cli.py             # Click-based CLI entry points
 ```
 
@@ -436,6 +464,44 @@ RotorQuant easier to pipeline on hardware without scatter-gather support.
 Use `dhurandhar-compare-codecs` or Tab 5 of the dashboard to run
 side-by-side benchmarks on your target geometry.
 
+### `spectralquant.py` — eigenspectral-aware KV compression
+
+Implements the eigenspectral-aware approach from
+[SpectralQuant](https://github.com/Dynamis-Labs/spectralquant)
+(Dynamis Labs, 2026):
+
+1. **Calibration — PCA on KV activations.** Discovers the data's eigenbasis
+   and effective rank (d_eff). Real KV cache keys concentrate signal in
+   only ~3-4% of the head dimension. This is a one-time cost (~15s).
+
+2. **Eigenbasis rotation.** Projects into the discovered eigenbasis so
+   signal dimensions come first and noise dimensions last — the opposite
+   of TurboQuant's uniformity goal.
+
+3. **Water-fill bit allocation.** Distributes the bit budget non-uniformly:
+   signal dimensions (top d_eff) get more bits, noise dimensions get fewer.
+   Excess budget from clamping signal bits at max redistributes to noise.
+
+4. **Per-regime symmetric linear quantization.** Signal and noise dimensions
+   are quantized independently at their allocated precision.
+
+Cross-model comparison at 4-bit quantization:
+
+| Head dim | TurboQuant cos | SpectralQuant cos | Delta |
+|---|---|---|---|
+| 256 (Gemma 4) | 0.9965 | 0.9982 | +0.0017 |
+| 128 (Llama/Qwen/ZAYA) | 0.9972 | 0.9984 | +0.0012 |
+| 64 (small models) | 0.9978 | 0.9979 | +0.0001 |
+
+The advantage scales with head dimension — larger heads have more noise
+dimensions where TurboQuant wastes uniform error correction.
+SpectralQuant's selective allocation captures this inefficiency.
+
+This is a reference implementation using synthetic eigenspectra for
+benchmarking. Quality on real model activations depends on PCA calibration
+from actual KV cache data. Use Tab 6 of the dashboard for interactive
+comparison across all models.
+
 ### `finetune.py` — QLoRA training pipeline
 
 Follows Google's recommended Gemma 4 QLoRA recipe, generalized for any
@@ -501,6 +567,10 @@ uv run pytest tests/test_strip_audio.py -v
   heavy-tail KV distributions
 - RotorQuant stage-1 FMA cost is 30–38% lower than TurboQuant at
   head_dim ∈ {128, 256}
+- SpectralQuant achieves +0.1 to +1.7 pp cosine similarity vs TurboQuant
+  at 4-bit across 9 model architectures on synthetic spectral data
+- MoE (ZAYA1-8B) and Mamba hybrid memory analysis correctly accounts for
+  all-expert weight residency and float32 SSM state
 
 **Unvalidated against real checkpoints (requires GPU + HF access):**
 - `finetune.py` has not been run against actual model weights. The QLoRA

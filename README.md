@@ -412,8 +412,9 @@ Implements the two-stage online vector quantization from
 
 1. **Stage 1 — Randomized Hadamard rotation.** Flattens heavy-tailed
    per-coordinate distributions so that sign-bit quantization becomes
-   effective. Implemented via the Fast Walsh-Hadamard Transform (FWHT)
-   with random sign flips — O(d log d), no matrix multiplication.
+   effective. Uses a dense Hadamard matrix with random sign flips —
+   O(d²) in this reference implementation. A production port could use
+   an in-place Fast Walsh-Hadamard Transform for O(d log d).
 
 2. **Stage 2 — Sign + L2 norm + residual int-quant.** Stores 1 sign bit
    per coordinate plus the vector's L2 norm, then quantizes the
@@ -450,10 +451,10 @@ Trade-off vs TurboQuant on this reference implementation:
 
 | Metric | TurboQuant | RotorQuant |
 |---|---|---|
-| Stage-1 cost @ d=128 | 896 FMAs (FWHT) | 630 FMAs |
-| Stage-1 cost @ d=256 | 2048 FMAs | 1275 FMAs |
+| Stage-1 cost @ d=128 | 16,384 FMAs (dense matmul) | 630 FMAs |
+| Stage-1 cost @ d=256 | 65,536 FMAs (dense matmul) | 1275 FMAs |
 | Quality @ 4-bit residual (synth) | cos_sim 0.997 | cos_sim 0.971 |
-| Kernel complexity | butterfly network | embarrassingly parallel |
+| Kernel complexity | dense matmul (or FWHT if ported) | embarrassingly parallel |
 | Inter-coord dependencies | yes | no (block-independent) |
 
 The real RotorQuant case for edge is kernel simplicity and block

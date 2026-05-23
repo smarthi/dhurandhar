@@ -23,8 +23,6 @@ match published d_eff ratios) so it can run without a real model.
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn.functional as F  # noqa: N812
 from pydantic import BaseModel, ConfigDict
@@ -445,37 +443,41 @@ class SpectralQuantCodec:
         return self.head_dim * self.head_dim
 
 
-def fma_cost_comparison(head_dim: int, d_eff_ratio: float = 0.04) -> dict[str, int | float]:
+def fma_cost_comparison(
+    head_dim: int,
+    d_eff_ratio: float = 0.04,
+    d_eff_override: int | None = None,
+) -> dict[str, int | float]:
     """Compare Stage-1 FMA costs: TurboQuant (Hadamard) vs SpectralQuant (eigenbasis).
 
-    TurboQuant uses O(d log d) via FWHT (reference impl does O(d²) matmul).
-    SpectralQuant uses O(d²) dense rotation but only needs error correction
-    on d_eff dimensions (~4% of d), making the total work lower in practice.
+    Both implementations use O(d²) dense matmul for the rotation stage.
+    TurboQuant *could* use O(d log d) via in-place FWHT, but the reference
+    implementation (and this codebase) uses full matmul — so both codecs
+    have identical rotation cost at d².
+
+    SpectralQuant's advantage is in error correction: only d_eff signal
+    dimensions need correction vs all d dimensions for TurboQuant.
+
+    Args:
+        d_eff_override: If provided, use this calibrated d_eff instead of
+            computing from d_eff_ratio. Use this when a codec has already
+            been calibrated via PCA.
     """
-    # TurboQuant: d * log2(d) / 2 FMAs (FWHT butterfly)
-    # Reference implementation uses full matmul: d²
-    tq_fwht = int(head_dim * math.log2(max(head_dim, 2)) / 2)
     tq_matmul = head_dim * head_dim
+    sq_matmul = head_dim * head_dim  # Same: full eigenbasis rotation
 
-    # SpectralQuant: full rotation is d², but can truncate to d * d_eff
-    # for signal-only path (noise path uses simplified quantization)
-    d_eff = max(1, int(head_dim * d_eff_ratio))
-    sq_signal = head_dim * d_eff         # Signal rotation
-    sq_noise = head_dim * (head_dim - d_eff)  # Noise rotation (simpler quant)
-    sq_total = sq_signal + sq_noise      # = d² (same total rotation)
+    d_eff = d_eff_override if d_eff_override is not None else max(1, int(head_dim * d_eff_ratio))
 
-    # But SpectralQuant saves on error correction:
-    # TQ: error correction on all d dims; SQ: only on d_eff dims
-    tq_error_correction = head_dim       # QJL on all dims
-    sq_error_correction = d_eff          # QJL on signal dims only
+    # Error correction cost difference:
+    # TQ: residual correction on all d dims; SQ: only on d_eff dims
+    tq_error_correction = head_dim
+    sq_error_correction = d_eff
 
     return {
         "head_dim": head_dim,
         "d_eff": d_eff,
-        "turboquant_fwht_fmas": tq_fwht,
-        "turboquant_matmul_fmas": tq_matmul,
-        "spectralquant_rotation_fmas": sq_total,
-        "spectralquant_signal_fmas": sq_signal,
+        "turboquant_rotation_fmas": tq_matmul,
+        "spectralquant_rotation_fmas": sq_matmul,
         "turboquant_error_correction": tq_error_correction,
         "spectralquant_error_correction": sq_error_correction,
         "error_correction_speedup": round(tq_error_correction / max(sq_error_correction, 1), 2),

@@ -704,8 +704,8 @@ def compare_turbo_vs_spectral(
             f"{ms_c.get('d_eff', '-')}",
         ])
 
-    # FMA / error correction comparison
-    fma = spectral_fma_cost_comparison(head_dim)
+    # FMA / error correction comparison (use calibrated d_eff from the 4-bit codec)
+    fma = spectral_fma_cost_comparison(head_dim, d_eff_override=sq.d_eff)
 
     # Plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))

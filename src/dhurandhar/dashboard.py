@@ -8,8 +8,8 @@ Six tabs aligned to the decision log's acceptance gates:
                                  across all profiles, plus custom device input
   3. TurboQuant KV             — compression quality sweep across residual bits
   4. Mmap Profiler             — real mmap benchmark + peak RSS probe
-  5. TurboQuant vs RotorQuant  — codec comparison: quality vs arithmetic cost
-  6. TurboQuant vs SpectralQuant — eigenspectral-aware compression comparison
+  5. TurboQuant vs RotorQuant vs OScaR    — codec comparison: quality vs arithmetic cost
+  6. TurboQuant vs SpectralQuant vs OScaR — eigenspectral + token-norm compression comparison
 
 Launch:
     dhurandhar-dashboard                         # localhost:7860
@@ -43,6 +43,8 @@ import numpy as np
 from .config import DEVICE_PROFILES
 from .mmap_profiler import PATTERNS, MmapDecodeProfiler
 from .models import get_model, list_models
+from .oscarquant import OScaRCodec, OScaRConfig
+from .oscarquant import fma_cost_comparison as oscar_fma_cost_comparison
 from .ple_analysis import PLEFootprintAnalyzer
 from .rotorquant import RotorQuantCodec, RotorQuantConfig, fma_cost_comparison
 from .spectralquant import SpectralQuantCodec, SpectralQuantConfig, synthesize_spectral_kv_tensor
@@ -546,7 +548,7 @@ def compare_codecs(
     seq_len: int,
     distribution: str,
 ):
-    """Run both codecs across residual-bits sweep and return comparison plot + table."""
+    """Run TQ / RQ / OScaR across a bits sweep and return comparison plot + tables."""
     kv = synthesize_kv_tensor(
         seq_len=min(seq_len, 1024),
         num_kv_heads=num_kv_heads,
@@ -555,57 +557,58 @@ def compare_codecs(
     )
 
     bits_sweep = [2, 3, 4, 6, 8]
-    tq_cos, tq_mse = [], []
-    rq_cos, rq_mse = [], []
+    tq_cos, rq_cos, oq_cos = [], [], []
     table_rows = []
     for b in bits_sweep:
         tq = TurboQuantCodec(head_dim=head_dim, config=TurboQuantConfig(residual_bits=b))
         rq = RotorQuantCodec(head_dim=head_dim, config=RotorQuantConfig(residual_bits=b))
+        oq = OScaRCodec(head_dim=head_dim, config=OScaRConfig(key_bits=b, value_bits=b))
         mt = tq.reconstruction_error(kv)
         mr = rq.reconstruction_error(kv)
+        mo = oq.reconstruction_error(kv)
         tq_cos.append(mt["cos_sim"])
         rq_cos.append(mr["cos_sim"])
-        tq_mse.append(mt["mse"])
-        rq_mse.append(mr["mse"])
-        delta = mr["cos_sim"] - mt["cos_sim"]
+        oq_cos.append(mo["cos_sim"])
         table_rows.append([
             b,
-            f"{mt['cos_sim']:.4f}",
-            f"{mt['mse']:.5f}",
-            f"{mr['cos_sim']:.4f}",
-            f"{mr['mse']:.5f}",
-            f"{delta:+.4f}",
+            f"{mt['cos_sim']:.4f}", f"{mt['mse']:.5f}",
+            f"{mr['cos_sim']:.4f}", f"{mr['mse']:.5f}",
+            f"{mo['cos_sim']:.4f}", f"{mo['mse']:.5f}",
         ])
 
-    # FMA comparison table
+    # FMA comparison table — three codecs side by side
+    all_dims = sorted({64, 128, head_dim, 256, 512})
     fma_rows = []
-    for d in sorted({64, 128, head_dim, 256, 512}):
+    for d in all_dims:
         c = fma_cost_comparison(d)
+        oc = oscar_fma_cost_comparison(d)
         fma_rows.append([
             d,
             f"{c['turboquant_fmas']:,}",
             f"{c['rotorquant_fmas']:,}",
-            f"{c['speedup_ratio']:.2f}×",
+            f"{oc['oscar_fmas']:,}",
         ])
 
-    # Plot: side-by-side quality + FMA cost
+    # Plot: quality (3 lines) + FMA cost (3 bars)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
 
     ax1.plot(bits_sweep, tq_cos, marker="o", label="TurboQuant", color="tab:blue")
     ax1.plot(bits_sweep, rq_cos, marker="s", label="RotorQuant", color="tab:orange")
-    ax1.set_xlabel("Residual bits")
+    ax1.plot(bits_sweep, oq_cos, marker="^", label="OScaR", color="tab:red")
+    ax1.set_xlabel("Bits")
     ax1.set_ylabel("Cosine similarity")
     ax1.set_title("Reconstruction quality")
     ax1.grid(True, alpha=0.3)
     ax1.legend()
 
-    all_dims = sorted({64, 128, head_dim, 256, 512})
     tq_fmas = [fma_cost_comparison(d)["turboquant_fmas"] for d in all_dims]
     rq_fmas = [fma_cost_comparison(d)["rotorquant_fmas"] for d in all_dims]
+    oq_fmas = [oscar_fma_cost_comparison(d)["oscar_fmas"] for d in all_dims]
     x = np.arange(len(all_dims))
-    width = 0.35
-    ax2.bar(x - width/2, tq_fmas, width, label="TurboQuant", color="tab:blue", alpha=0.8)
-    ax2.bar(x + width/2, rq_fmas, width, label="RotorQuant", color="tab:orange", alpha=0.8)
+    width = 0.28
+    ax2.bar(x - width, tq_fmas, width, label="TurboQuant", color="tab:blue", alpha=0.85)
+    ax2.bar(x, rq_fmas, width, label="RotorQuant", color="tab:orange", alpha=0.85)
+    ax2.bar(x + width, oq_fmas, width, label="OScaR", color="tab:red", alpha=0.85)
     ax2.set_xticks(x)
     ax2.set_xticklabels([str(d) for d in all_dims])
     ax2.set_xlabel("head_dim")
@@ -617,16 +620,16 @@ def compare_codecs(
     fig.tight_layout()
 
     summary = (
-        "### Quality vs arithmetic cost\n"
+        "### Quality vs arithmetic cost — three codecs\n"
         "TurboQuant uses a dense Hadamard rotation (O(d·log d) via FWHT); "
-        "RotorQuant uses blockwise 3D Clifford rotors (O(d)). At 4-bit residual, "
-        "TurboQuant typically has a slight quality edge on synthetic KV; "
-        "RotorQuant wins on kernel simplicity and parallelizability — both "
-        "important on NPU/SIMD edge silicon.\n\n"
+        "RotorQuant uses blockwise 3D Clifford rotors (O(d)); OScaR reuses "
+        "the TurboQuant Hadamard but adds omni-token scaling and groupwise "
+        "INT for keys. At 4-bit, TurboQuant and OScaR typically run within "
+        "a small delta on heavy-tail KV; RotorQuant wins on kernel simplicity "
+        "and parallelizability.\n\n"
         "**Caveat:** these are reference Python implementations on synthetic "
-        "heavy-tail KV. The RotorQuant paper's published PPL wins on real LLMs "
-        "depend on an optimized kernel and real model activations. Real-model "
-        "quality comparison requires the DynamicCache integration (next ADR)."
+        "heavy-tail KV. Real-model quality comparison requires the "
+        "DynamicCache integration."
     )
 
     return table_rows, fma_rows, summary, fig
@@ -649,33 +652,33 @@ def compare_turbo_vs_spectral(
         head_dim=head_dim,
     )
 
-    # Per-model quality comparison across bit budgets
+    # Per-model quality comparison across bit budgets — TQ / SQ / OScaR
     bits_sweep = [2, 3, 4, 6, 8]
-    tq_cos, sq_cos = [], []
-    tq_mse, sq_mse = [], []
+    tq_cos, sq_cos, oq_cos = [], [], []
     table_rows = []
     for b in bits_sweep:
         tq = TurboQuantCodec(head_dim=head_dim, config=TurboQuantConfig(residual_bits=b))
-        sq = SpectralQuantCodec(head_dim=head_dim, config=SpectralQuantConfig(avg_bits=float(b)))
+        sq = SpectralQuantCodec(
+            head_dim=head_dim,
+            config=SpectralQuantConfig(avg_bits=float(b), wf_max_bits=max(8, b)),
+        )
         sq.calibrate(kv)  # PCA calibration — the key SpectralQuant step
+        oq = OScaRCodec(head_dim=head_dim, config=OScaRConfig(key_bits=b, value_bits=b))
         mt = tq.reconstruction_error(kv)
         ms = sq.reconstruction_error(kv)
+        mo = oq.reconstruction_error(kv)
         tq_cos.append(mt["cos_sim"])
         sq_cos.append(ms["cos_sim"])
-        tq_mse.append(mt["mse"])
-        sq_mse.append(ms["mse"])
-        delta = ms["cos_sim"] - mt["cos_sim"]
+        oq_cos.append(mo["cos_sim"])
         table_rows.append([
             b,
-            f"{mt['cos_sim']:.4f}",
-            f"{mt['mse']:.5f}",
-            f"{ms['cos_sim']:.4f}",
-            f"{ms['mse']:.5f}",
-            f"{delta:+.4f}",
+            f"{mt['cos_sim']:.4f}", f"{mt['mse']:.5f}",
+            f"{ms['cos_sim']:.4f}", f"{ms['mse']:.5f}",
+            f"{mo['cos_sim']:.4f}", f"{mo['mse']:.5f}",
             f"{ms.get('d_eff', '-')}",
         ])
 
-    # Cross-model comparison at avg_bits=4
+    # Cross-model comparison at 4-bit — TQ / SQ / OScaR
     cross_model_rows = []
     for mname in list_models():
         m_arch = get_model(mname)
@@ -691,9 +694,12 @@ def compare_turbo_vs_spectral(
             head_dim=m_arch.head_dim, config=SpectralQuantConfig(avg_bits=4.0)
         )
         sq_c.calibrate(m_kv)
+        oq_c = OScaRCodec(
+            head_dim=m_arch.head_dim, config=OScaRConfig(key_bits=4, value_bits=4)
+        )
         mt_c = tq_c.reconstruction_error(m_kv)
         ms_c = sq_c.reconstruction_error(m_kv)
-        delta_c = ms_c["cos_sim"] - mt_c["cos_sim"]
+        mo_c = oq_c.reconstruction_error(m_kv)
         mse_reduction = (1 - ms_c["mse"] / mt_c["mse"]) * 100 if mt_c["mse"] > 0 else 0
         cross_model_rows.append([
             mname,
@@ -701,7 +707,7 @@ def compare_turbo_vs_spectral(
             m_arch.num_key_value_heads,
             f"{mt_c['cos_sim']:.4f}",
             f"{ms_c['cos_sim']:.4f}",
-            f"{delta_c:+.4f}",
+            f"{mo_c['cos_sim']:.4f}",
             f"{ms_c.get('d_eff', '-')}",
             f"{mse_reduction:.1f}%",
         ])
@@ -714,13 +720,16 @@ def compare_turbo_vs_spectral(
 
     ax1.plot(bits_sweep, tq_cos, marker="o", label="TurboQuant", color="tab:blue")
     ax1.plot(bits_sweep, sq_cos, marker="s", label="SpectralQuant", color="tab:green")
-    ax1.set_xlabel("Avg bits")
+    ax1.plot(bits_sweep, oq_cos, marker="^", label="OScaR", color="tab:red")
+    ax1.set_xlabel("Bits")
     ax1.set_ylabel("Cosine similarity")
     ax1.set_title(f"Reconstruction quality — {model_name}")
     ax1.grid(True, alpha=0.3)
     ax1.legend()
 
-    # Cross-model bar chart — MSE reduction % (much more discriminating than cosine)
+    # Cross-model bar chart — SpectralQuant MSE reduction (its domain of advantage).
+    # OScaR's strength is at low-bit token-norm imbalance, not low-rank KV — its
+    # cos_sim is reported in the cross-model table next to the chart.
     model_names = [r[0] for r in cross_model_rows]
     mse_reductions = [float(r[7].rstrip("%")) for r in cross_model_rows]
     x = np.arange(len(model_names))
@@ -986,14 +995,16 @@ def build_dashboard() -> gr.Blocks:
                 )
 
             # -------------- Tab 5 --------------
-            with gr.Tab("🔄 TurboQuant vs RotorQuant"):
+            with gr.Tab("🔄 TurboQuant vs RotorQuant vs OScaR"):
                 gr.Markdown(
-                    "Side-by-side comparison of two KV cache compression codecs. "
-                    "Both use the same two-stage pipeline; they differ in the "
-                    "stage-1 rotation: TurboQuant uses a dense Hadamard butterfly, "
-                    "RotorQuant uses blockwise 3D Clifford rotors (sparse, more "
-                    "NPU-friendly). For edge deployment, kernel complexity "
-                    "matters as much as quality."
+                    "Side-by-side comparison of three KV cache compression codecs on "
+                    "the same heavy-tail synthetic workload. They differ in the "
+                    "stage-1 rotation and how they handle token-norm imbalance: "
+                    "TurboQuant uses a dense Hadamard + sign+residual, RotorQuant "
+                    "uses blockwise 3D Clifford rotors (sparse, more NPU-friendly), "
+                    "OScaR reuses the TurboQuant Hadamard but adds omni-token "
+                    "scaling + groupwise INT for keys. For edge deployment, kernel "
+                    "complexity matters as much as quality."
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -1024,19 +1035,19 @@ def build_dashboard() -> gr.Blocks:
                             "_Click **Compare codecs** to run the sweep._"
                         )
                         cc_quality = gr.Dataframe(
-                            headers=["Res.bits",
-                                     "TQ cos_sim", "TQ mse",
-                                     "RQ cos_sim", "RQ mse",
-                                     "Δ cos_sim"],
-                            label="Quality at each residual bit width",
-                            value=[["click →", "", "", "", "", ""]],
+                            headers=["bits",
+                                     "TQ cos", "TQ mse",
+                                     "RQ cos", "RQ mse",
+                                     "OScaR cos", "OScaR mse"],
+                            label="Quality at each bit width",
+                            value=[["click →", "", "", "", "", "", ""]],
                             wrap=True,
                         )
                         cc_fma = gr.Dataframe(
                             headers=["head_dim",
                                      "TurboQuant FMAs",
                                      "RotorQuant FMAs",
-                                     "Speedup"],
+                                     "OScaR FMAs"],
                             label="Stage-1 arithmetic cost per KV vector",
                             value=[["click →", "", "", ""]],
                             wrap=True,
@@ -1061,14 +1072,15 @@ def build_dashboard() -> gr.Blocks:
                 )
 
             # -------------- Tab 6 --------------
-            with gr.Tab("🔬 TurboQuant vs SpectralQuant"):
+            with gr.Tab("🔬 TurboQuant vs SpectralQuant vs OScaR"):
                 gr.Markdown(
                     "SpectralQuant (Dynamis Labs, 2026) exploits the universal "
                     "low-rank structure of KV cache keys: signal concentrates in "
-                    "only ~3-4% of dimensions. By applying PCA-based rotation and "
-                    "selective error correction on signal dimensions only, it "
-                    "achieves higher quality AND better compression than TurboQuant. "
-                    "This tab compares both codecs across all registered models."
+                    "only ~3-4% of dimensions. OScaR (arXiv:2605.19660) takes a "
+                    "different angle — canalized Hadamard rotation + omni-token "
+                    "scaling to fix Token Norm Imbalance at low-bit budgets. "
+                    "This tab runs all three codecs (TurboQuant, SpectralQuant, "
+                    "OScaR) on spectral KV data across every registered model."
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -1096,23 +1108,24 @@ def build_dashboard() -> gr.Blocks:
                         )
                         sq_quality = gr.Dataframe(
                             headers=[
-                                "Avg bits",
-                                "TQ cos_sim", "TQ mse",
-                                "SQ cos_sim", "SQ mse",
-                                "Δ cos_sim", "d_eff",
+                                "bits",
+                                "TQ cos", "TQ mse",
+                                "SQ cos", "SQ mse",
+                                "OScaR cos", "OScaR mse",
+                                "d_eff",
                             ],
                             label="Quality sweep (selected model)",
-                            value=[["click →", "", "", "", "", "", ""]],
+                            value=[["click →", "", "", "", "", "", "", ""]],
                             wrap=True,
                         )
                         sq_cross = gr.Dataframe(
                             headers=[
                                 "Model", "head_dim", "KV heads",
-                                "TQ cos_sim", "SQ cos_sim",
-                                "Δ cos_sim", "d_eff",
+                                "TQ cos", "SQ cos", "OScaR cos",
+                                "d_eff", "SQ MSE red",
                             ],
                             label="Cross-model comparison @ 4-bit",
-                            value=[["click →", "", "", "", "", "", ""]],
+                            value=[["click →", "", "", "", "", "", "", ""]],
                             wrap=True,
                         )
                         sq_plot = gr.Plot(

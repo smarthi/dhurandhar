@@ -1,6 +1,6 @@
 [project]
 name = "dhurandhar"
-version = "0.1.3"
+version = "0.1.4"
 description = "Model-agnostic edge deployment analysis framework — PLE memory analysis, TurboQuant/RotorQuant KV compression, mmap profiling, and LoRA fine-tuning for memory-constrained devices."
 readme = "README.md"
 requires-python = ">=3.11"

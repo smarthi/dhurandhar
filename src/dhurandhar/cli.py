@@ -17,8 +17,11 @@ import click
 from .config import DEVICE_PROFILES
 from .mmap_profiler import MEMORY_BUDGETS_MB, PATTERNS, MmapDecodeProfiler
 from .models import GEMMA4_E2B, get_model
+from .oscarquant import OScaRCodec, OScaRConfig
+from .oscarquant import fma_cost_comparison as oscar_fma_cost_comparison
 from .ple_analysis import PLEFootprintAnalyzer
-from .rotorquant import RotorQuantCodec, RotorQuantConfig, fma_cost_comparison
+from .rotorquant import fma_cost_comparison
+from .spectralquant import SpectralQuantCodec, SpectralQuantConfig
 from .turboquant import (
     KVCacheCompressor,
     TurboQuantCodec,
@@ -525,16 +528,19 @@ def profile_mmap_cmd(
 
 
 @click.command(name="compare-codecs")
-@click.option("--head-dim", type=int, default=255,
-              help="Must be divisible by 3 for clean RotorQuant blocks.")
+@click.option("--head-dim", type=int, default=256,
+              help="Default 256 — divides cleanly by both 32 (OScaR groups) "
+                   "and 3 (RotorQuant blocks suffice when padded).")
 @click.option("--num-kv-heads", type=int, default=4)
 @click.option("--seq-len", type=int, default=2048,
               help="Sample size for quality measurement.")
 @click.option(
-    "--residual-bits",
+    "--bits",
+    "bits_str",
     type=str,
     default="2,3,4,6,8",
-    help="Comma-separated list of residual bit widths to sweep.",
+    help="Comma-separated list of bit widths to sweep "
+         "(TurboQuant residual bits / SpectralQuant avg_bits / OScaR key_bits).",
 )
 @click.option(
     "--distribution",
@@ -546,29 +552,29 @@ def compare_codecs_cmd(
     head_dim: int,
     num_kv_heads: int,
     seq_len: int,
-    residual_bits: str,
+    bits_str: str,
     distribution: str,
     json_out: str | None,
 ) -> None:
-    """Compare TurboQuant vs RotorQuant on the same synthetic KV.
+    """Compare TurboQuant vs SpectralQuant vs OScaR on the same synthetic KV.
 
-    RotorQuant is expected to offer comparable (sometimes slightly worse)
-    reconstruction quality at a meaningful arithmetic cost reduction — the
-    trade is relevant when the bottleneck is the stage-1 rotation kernel
-    rather than the residual quantization.
+    Three codecs, one workload — all consume the same `(seq_len, num_kv_heads,
+    head_dim)` heavy-tail tensor and report cosine similarity + MSE at each
+    bit budget. RotorQuant FMA cost is also reported as a stage-1 cost
+    reference point.
     """
     from tabulate import tabulate as tab
 
-    bits_list = [int(b.strip()) for b in residual_bits.split(",")]
+    bits_list = [int(b.strip()) for b in bits_str.split(",")]
 
     click.echo("=" * 78)
-    click.echo(" TurboQuant vs RotorQuant codec comparison")
+    click.echo(" Codec comparison: TurboQuant vs SpectralQuant vs OScaR")
     click.echo("=" * 78)
     click.echo(f"  head_dim={head_dim}, num_kv_heads={num_kv_heads}, seq_len={seq_len}")
     click.echo(f"  distribution={distribution}")
     click.echo("")
 
-    # Generate one tensor, compare both codecs on it
+    # Generate one tensor, compare all codecs on it
     kv = synthesize_kv_tensor(
         seq_len=seq_len,
         num_kv_heads=num_kv_heads,
@@ -580,50 +586,57 @@ def compare_codecs_cmd(
     all_results = {}
     for bits in bits_list:
         tq = TurboQuantCodec(head_dim=head_dim, config=TurboQuantConfig(residual_bits=bits))
-        rq = RotorQuantCodec(head_dim=head_dim, config=RotorQuantConfig(residual_bits=bits))
+        sq = SpectralQuantCodec(
+            head_dim=head_dim,
+            config=SpectralQuantConfig(avg_bits=float(bits), wf_max_bits=max(8, bits)),
+        )
+        oq = OScaRCodec(
+            head_dim=head_dim,
+            config=OScaRConfig(key_bits=bits, value_bits=bits),
+        )
         mt = tq.reconstruction_error(kv)
-        mr = rq.reconstruction_error(kv)
+        ms = sq.reconstruction_error(kv)
+        mo = oq.reconstruction_error(kv)
         rows.append([
             bits,
-            f"{mt['cos_sim']:.4f}",
-            f"{mt['mse']:.5f}",
-            f"{mr['cos_sim']:.4f}",
-            f"{mr['mse']:.5f}",
-            f"{mr['cos_sim'] - mt['cos_sim']:+.4f}",
+            f"{mt['cos_sim']:.4f}", f"{mt['mse']:.5f}",
+            f"{ms['cos_sim']:.4f}", f"{ms['mse']:.5f}",
+            f"{mo['cos_sim']:.4f}", f"{mo['mse']:.5f}",
         ])
-        all_results[bits] = {"turboquant": mt, "rotorquant": mr}
+        all_results[bits] = {"turboquant": mt, "spectralquant": ms, "oscar": mo}
 
     click.echo(tab(
         rows,
-        headers=["Res.bits", "TQ cos_sim", "TQ mse",
-                 "RQ cos_sim", "RQ mse", "Δ cos_sim"],
+        headers=[
+            "bits",
+            "TQ cos", "TQ mse",
+            "SQ cos", "SQ mse",
+            "OScaR cos", "OScaR mse",
+        ],
         tablefmt="simple",
     ))
     click.echo("")
 
-    # Arithmetic cost comparison
-    click.echo("Arithmetic cost per KV vector (stage-1 rotation only):")
+    # Arithmetic cost comparison — stage-1 rotation only
+    click.echo("Arithmetic cost per KV vector (stage-1 rotation, FWHT/matmul):")
     cost_rows = []
-    for d in [64, 128, head_dim, 256, 512]:
-        c = fma_cost_comparison(d)
+    seen = set()
+    for d in sorted({64, 128, head_dim, 256, 512}):
+        if d in seen:
+            continue
+        seen.add(d)
+        rq_cost = fma_cost_comparison(d)
+        oq_cost = oscar_fma_cost_comparison(d)
         cost_rows.append([
             d,
-            c["turboquant_fmas"],
-            c["rotorquant_fmas"],
-            f"{c['speedup_ratio']:.2f}x",
+            rq_cost["turboquant_fmas"],
+            rq_cost["rotorquant_fmas"],
+            oq_cost["oscar_fmas"],
         ])
-    # Dedupe head_dim
-    seen = set()
-    cost_rows_unique = []
-    for r in cost_rows:
-        if r[0] not in seen:
-            seen.add(r[0])
-            cost_rows_unique.append(r)
-    cost_rows_unique.sort(key=lambda r: r[0])
 
     click.echo(tab(
-        cost_rows_unique,
-        headers=["head_dim", "TurboQuant FMAs", "RotorQuant FMAs", "Speedup"],
+        cost_rows,
+        headers=["head_dim", "TurboQuant FMAs", "RotorQuant FMAs", "OScaR FMAs"],
         tablefmt="simple",
     ))
     click.echo("")
@@ -631,8 +644,10 @@ def compare_codecs_cmd(
     click.echo("Notes:")
     click.echo("  • TurboQuant FMA cost assumes Fast Walsh-Hadamard Transform (d·log2(d)),")
     click.echo("    not naive dense matmul (d²).")
-    click.echo("  • RotorQuant's real wins are in kernel simplicity and parallelizability,")
-    click.echo("    not FMA count alone. Measure on target silicon for the full picture.")
+    click.echo("  • OScaR reuses the TurboQuant Hadamard and adds O(d) for omni-token")
+    click.echo("    scaling + groupwise quant scan.")
+    click.echo("  • SpectralQuant's quality advantage requires PCA calibration on real")
+    click.echo("    activations; this sweep uses synthetic eigenspectra.")
     click.echo("  • Quality numbers here are on synthetic heavy-tail KV. Real-model")
     click.echo("    perplexity comparison requires the DynamicCache integration.")
 
@@ -647,7 +662,10 @@ def compare_codecs_cmd(
                 "distribution": distribution,
             },
             "quality_sweep": {str(b): r for b, r in all_results.items()},
-            "fma_costs": [fma_cost_comparison(d) for d in sorted({64, 128, head_dim, 256, 512})],
+            "fma_costs": [
+                {**fma_cost_comparison(d), **oscar_fma_cost_comparison(d)}
+                for d in sorted({64, 128, head_dim, 256, 512})
+            ],
         }
         Path(json_out).write_text(json.dumps(report, indent=2))
         click.echo(f"\nJSON report written to {json_out}")

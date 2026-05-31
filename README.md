@@ -27,7 +27,8 @@ that conversation to the front of the process.
 This toolkit lets you:
 
 1. **Predict** memory feasibility per device profile before hardware arrives
-2. **Measure** TurboQuant KV cache compression quality against hybrid-attention
+2. **Measure** KV cache compression quality across four codecs — TurboQuant,
+   RotorQuant, SpectralQuant, and OScaR — against hybrid-attention
    architectures (shared KV + GQA + sliding window)
 3. **Fine-tune** LoRA adapters on frozen-PLE base models via QLoRA
 
@@ -45,9 +46,10 @@ questions that matter *before* you ship:
 | **TurboQuant Sweep** | What is the quality/memory tradeoff at 2/3/4/6/8-bit KV compression? |
 | **RotorQuant Comparison** | TurboQuant vs RotorQuant — quality vs arithmetic cost? |
 | **SpectralQuant Comparison** | TurboQuant vs SpectralQuant — eigenspectral-aware compression? |
+| **OScaR Comparison** | TurboQuant vs OScaR — canalized rotation + omni-token scaling at low-bit budgets? |
 | **Mmap Profiler** | What is the real mmap throughput and peak RSS on this hardware? |
 
-All six analyses are exposed as a **CLI**, a **Python API**, and a
+All seven analyses are exposed as a **CLI**, a **Python API**, and a
 **6-tab Gradio dashboard**.
 
 ---
@@ -281,11 +283,13 @@ Six tabs:
    residual bits; live quality-vs-bits chart and memory savings estimate
 4. **⚡ Mmap Profiler** — real mmap throughput + peak RSS probe against
    configurable memory budgets
-5. **🔄 TurboQuant vs RotorQuant** — model-aware side-by-side codec
-   comparison: reconstruction quality sweep + stage-1 arithmetic cost
-6. **🔬 TurboQuant vs SpectralQuant** — eigenspectral-aware compression
-   comparison: per-model bit sweep + cross-model quality chart at 4-bit,
-   showing SpectralQuant's advantage on models with low effective rank
+5. **🔄 TurboQuant vs RotorQuant vs OScaR** — model-aware side-by-side
+   codec comparison: reconstruction quality sweep across three codecs +
+   stage-1 arithmetic cost
+6. **🔬 TurboQuant vs SpectralQuant vs OScaR** — eigenspectral- and
+   token-norm-aware compression comparison: per-model bit sweep across
+   three codecs + cross-model quality chart at 4-bit, with the
+   SpectralQuant MSE-reduction view as the bar overlay
 
 The dashboard is the recommended artifact for architecture review sessions —
 interactive tradeoff exploration beats static slides for deployment decisions.
@@ -390,6 +394,7 @@ src/dhurandhar/
 ├── turboquant.py      # TurboQuant codec (Hadamard + sign + residual)
 ├── rotorquant.py      # RotorQuant codec (blockwise 3D Clifford rotors + residual)
 ├── spectralquant.py   # SpectralQuant codec (eigenspectral-aware non-uniform quant)
+├── oscarquant.py      # OScaR codec (canalized rotation + omni-token scaling)
 ├── finetune.py        # QLoRA training pipeline + audio-encoder strip
 ├── dashboard.py       # Gradio 6-tab UI combining all of the above
 └── cli.py             # Click-based CLI entry points
@@ -540,6 +545,36 @@ benchmarking. Quality on real model activations depends on PCA calibration
 from actual KV cache data. Use Tab 6 of the dashboard for interactive
 comparison across all models.
 
+A side-by-side write-up of SpectralQuant vs TurboQuant — methodology,
+per-model bit sweeps, and the cosine-similarity / MSE deltas — is in
+[reports/spectralquant_vs_turboquant_report.pdf](reports/spectralquant_vs_turboquant_report.pdf).
+
+### `oscarquant.py` — Omni-Scaled Canalized Rotation
+
+Implements the training-free OScaR codec from
+[arXiv:2605.19660](https://arxiv.org/abs/2605.19660):
+
+1. **Canalized rotation.** Randomized Hadamard on keys (and queries at
+   attention time) to redistribute outlier-channel energy. The rotation is
+   the same one TurboQuant uses, so the FWHT cost is identical.
+
+2. **Omni-token scaling.** Divide each token by its post-rotation L2 norm
+   so every token sits on the unit sphere. The per-token norm `tau` is
+   stored as 16-bit metadata and restored at dequant. This is what fixes
+   *Token Norm Imbalance* — the failure mode where a handful of large-norm
+   tokens dominate the per-tensor scale and push the rest of the sequence
+   under the quant noise floor.
+
+3. **Asymmetric K/V quantization.** Keys: per-channel INT with group size 32
+   on the rotated, unit-normalized tensor. Values: rotation only (no token
+   scaling), then per-token INT — re-injecting norm on V would
+   double-scale the projected attention output.
+
+At INT4 keys / INT4 values OScaR typically lands within ~0.1pp PPL of full
+bf16; at INT2 keys it preserves usable quality where naive per-channel INT2
+collapses. Use `dhurandhar-compare-codecs` for a side-by-side TurboQuant /
+SpectralQuant / OScaR quality sweep on a shared synthetic workload.
+
 ### `finetune.py` — QLoRA training pipeline
 
 Follows Google's recommended Gemma 4 QLoRA recipe, generalized for any
@@ -569,19 +604,23 @@ capability.
 uv run pytest                         # all tests, ~15s
 uv run pytest tests/test_turboquant.py -v
 uv run pytest tests/test_rotorquant.py -v
+uv run pytest tests/test_oscarquant.py -v
 uv run pytest tests/test_ple_analysis.py -v
 uv run pytest tests/test_mmap_profiler.py -v
 uv run pytest tests/test_strip_audio.py -v
 ```
 
-90 tests cover:
+Tests cover:
 
-- **TurboQuant** (26 tests) — Hadamard orthogonality at d ∈ {2…256},
+- **TurboQuant** — Hadamard orthogonality at d ∈ {2…256},
   pack/unpack round-trip, codec quality (cos_sim > 0.95, norm
   preservation), shared-KV skipping, quality monotone in residual bits
-- **RotorQuant** (17 tests) — Clifford rotor unit norm, sandwich
+- **RotorQuant** — Clifford rotor unit norm, sandwich
   invertibility, blockwise rotation on head_dim ∈ {64, 128, 129, 255,
   256}, codec quality, FMA cost beats TurboQuant at typical dims
+- **OScaR** — canalized rotation invertibility, Q·K preservation under
+  rotation, key-path and value-path round-trip shapes, INT2 MSE no worse
+  than naive per-channel baseline on heavy-tail KV
 - **PLE analysis** (12 tests) — `PLE > decoder` invariant for Gemma4,
   device feasibility (eMMC infeasible, NVMe resident), KV scales with
   context but caps at sliding window, non-PLE models produce valid
@@ -607,6 +646,8 @@ uv run pytest tests/test_strip_audio.py -v
   head_dim ∈ {128, 256}
 - SpectralQuant achieves +0.1 to +1.7 pp cosine similarity vs TurboQuant
   at 4-bit across 9 model architectures on synthetic spectral data
+- OScaR's INT2 keys reconstruction beats a naive per-channel INT2 baseline
+  on synthetic heavy-tail KV, with per-vector cost ~1.05× TurboQuant
 - MoE (ZAYA1-8B) and Mamba hybrid memory analysis correctly accounts for
   all-expert weight residency and float32 SSM state
 

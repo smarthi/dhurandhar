@@ -81,36 +81,43 @@ GEMMA4_E4B = ModelArchitecture(
 )
 
 # Gemma 4 12B — the standalone (non-PLE) variant announced 2026-06-03 at
-# https://huggingface.co/google/gemma-4-12B. Dense 11.95B params, unified
-# multimodal architecture (no separate vision/audio encoders), 256K context,
-# 1024-token sliding window on local layers. Some fields (hidden_size,
-# intermediate_size, num_attention_heads, num_key_value_heads) are not in
-# the public model card and are estimated from Gemma 3 12B reference values
-# scaled to the Gemma 4 architecture; verify against AutoConfig before
-# trusting absolute decoder/PLE byte counts.
+# https://huggingface.co/google/gemma-4-12B. All values below verified
+# against the published config.json (model_type=gemma4_unified, dtype=bf16,
+# transformers_version=5.10.0.dev0). Notable architectural features:
+#   * attention_k_eq_v=true       — K and V share storage (kv_unified)
+#   * head_dim=256 on local, 512 on global (sliding vs full attention)
+#   * num_kv_heads=8 on local, 1 on global — extreme MQA on the global path
+#   * layer_types: explicit 5 sliding + 1 full pattern, repeated 8× = 48
+#   * tie_word_embeddings=true    — embedding & output share weights
+#   * final_logit_softcapping=30.0, p-RoPE on full-attention layers
+#   * unified multimodal: vision (mm_embed_dim=3840, patch_size=16, 280 soft
+#     tokens) and audio (audio_embed_dim=640) are integrated, not separate
+#     encoders — vision_encoder_mb / audio_encoder_mb stay 0
 GEMMA4_12B = ModelArchitecture(
-    name                    = "gemma4-12b",
-    family                  = "gemma",
-    param_count_b           = 11.95,     # fully dense — active == total
-    num_hidden_layers       = 48,
-    num_attention_layers    = 48,
-    hidden_size             = 3840,      # estimate from Gemma 3 12B
-    intermediate_size       = 15360,     # estimate from Gemma 3 12B
-    vocab_size              = 262_144,
-    num_attention_heads     = 16,        # estimate from Gemma 3 12B
-    num_key_value_heads     = 8,         # estimate from Gemma 3 12B
-    head_dim                = 256,       # Gemma 4 family default
-    local_to_global_ratio   = 5,         # 5 local : 1 global, last layer global
-    sliding_window          = 1024,      # confirmed from model card
-    shared_kv_last_n_layers = 0,         # 12B uses "unified KV in global layers"
-                                         # instead of the E-series shared-KV tail
-    has_ple                 = False,     # confirmed — 12B is not a PLE model
-    vision_encoder_mb       = 0.0,       # unified architecture, no separate encoder
-    audio_encoder_mb        = 0.0,       # unified architecture, no separate encoder
-    weight_dtype_bits       = 16,
-    kv_dtype_bits           = 16,
-    max_context_tokens      = 262_144,   # confirmed — 256K
-    runtime_overhead_mb     = 160.0,
+    name                       = "gemma4-12b",
+    family                     = "gemma",
+    param_count_b              = 11.95,    # fully dense — active == total
+    num_hidden_layers          = 48,
+    num_attention_layers       = 48,
+    hidden_size                = 3840,
+    intermediate_size          = 15360,
+    vocab_size                 = 262_144,
+    num_attention_heads        = 16,
+    num_key_value_heads        = 8,        # local-layer KV heads
+    head_dim                   = 256,      # local-layer head_dim
+    local_to_global_ratio      = 5,        # 5 sliding : 1 full, last layer full
+    sliding_window             = 1024,
+    global_head_dim            = 512,      # global layers use head_dim=512
+    num_global_key_value_heads = 1,        # extreme MQA on global path
+    kv_unified                 = True,     # attention_k_eq_v — halves KV cache
+    shared_kv_last_n_layers    = 0,        # num_kv_shared_layers=0 in config
+    has_ple                    = False,    # this is the non-PLE variant
+    vision_encoder_mb          = 0.0,      # unified — no separate encoder
+    audio_encoder_mb           = 0.0,      # unified — no separate encoder
+    weight_dtype_bits          = 16,
+    kv_dtype_bits              = 16,
+    max_context_tokens         = 131_072,  # max_position_embeddings=128K
+    runtime_overhead_mb        = 160.0,
 )
 
 # --- Zyphra ZAYA1 (MoE + Mamba hybrid) ---

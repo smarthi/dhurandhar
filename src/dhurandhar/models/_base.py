@@ -38,6 +38,17 @@ class ModelArchitecture(BaseModel):
         0 = all global (standard).
     sliding_window
         Token window for local-attention layers. 0 if no sliding window.
+    global_head_dim
+        Optional override for global-attention layers' head_dim. 0 = use head_dim.
+        Used by Gemma 4-12B (head_dim=256 on local, 512 on global).
+    num_global_key_value_heads
+        Optional override for global-attention layers' KV head count. 0 = use
+        num_key_value_heads. Used by Gemma 4-12B (8 on local, 1 on global —
+        extreme MQA on the global path).
+    kv_unified
+        Whether K and V share storage in the cache (Gemma 4-12B's
+        ``attention_k_eq_v=true``). When true, KV cache memory is halved
+        because only one tensor is stored per token per layer.
     shared_kv_last_n_layers
         Last N layers reuse KV from earlier layers (Gemma4). 0 = all fresh KV.
     has_ple
@@ -102,8 +113,11 @@ class ModelArchitecture(BaseModel):
     head_dim:                int
 
     # Hybrid attention
-    local_to_global_ratio:   int   = 0
-    sliding_window:          int   = 0
+    local_to_global_ratio:        int   = 0
+    sliding_window:               int   = 0
+    global_head_dim:              int   = 0   # 0 = use head_dim on globals too
+    num_global_key_value_heads:   int   = 0   # 0 = use num_key_value_heads on globals
+    kv_unified:                   bool  = False  # K and V share storage (attention_k_eq_v)
 
     # Shared KV
     shared_kv_last_n_layers: int   = 0
@@ -168,17 +182,39 @@ class ModelArchitecture(BaseModel):
         return [i for i in range(self.num_hidden_layers) if i not in shared]
 
     def kv_cache_bytes(self, context_tokens: int, kv_bits: int) -> int:
+        """KV cache memory across all fresh-KV layers.
+
+        Accounts for hybrid attention (local layers cap at sliding_window,
+        global layers see the full context), per-layer-type geometry
+        (Gemma 4-12B uses head_dim=256 + 8 KV heads on local layers but
+        head_dim=512 + 1 KV head on global layers), and the K=V
+        unification optimization (only one tensor stored per token per
+        layer when kv_unified=True).
+        """
         kv_element_bytes = kv_bits / 8.0
-        per_token_per_layer = self.num_key_value_heads * self.head_dim * 2
+        # K and V each contribute one tensor unless they share storage.
+        kv_tensors = 1 if self.kv_unified else 2
+
+        # Local-layer geometry (default).
+        local_kv_heads = self.num_key_value_heads
+        local_head_dim = self.head_dim
+        local_per_token = local_kv_heads * local_head_dim * kv_tensors
+
+        # Global-layer geometry — may differ on models like Gemma 4-12B.
+        global_kv_heads = self.num_global_key_value_heads or self.num_key_value_heads
+        global_head_dim = self.global_head_dim or self.head_dim
+        global_per_token = global_kv_heads * global_head_dim * kv_tensors
+
         total = 0
         global_set = set(self.global_layer_indices())
         for layer_idx in self.fresh_kv_layer_indices():
-            effective = (
-                context_tokens
-                if layer_idx in global_set or self.sliding_window == 0
-                else min(context_tokens, self.sliding_window)
-            )
-            total += int(effective * per_token_per_layer * kv_element_bytes)
+            if layer_idx in global_set or self.sliding_window == 0:
+                effective = context_tokens
+                per_token = global_per_token
+            else:
+                effective = min(context_tokens, self.sliding_window)
+                per_token = local_per_token
+            total += int(effective * per_token * kv_element_bytes)
         return total
 
     def decoder_params(self) -> int:

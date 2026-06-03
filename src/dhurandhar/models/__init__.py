@@ -110,6 +110,8 @@ GEMMA4_12B = ModelArchitecture(
     global_head_dim            = 512,      # global layers use head_dim=512
     num_global_key_value_heads = 1,        # extreme MQA on global path
     kv_unified                 = True,     # attention_k_eq_v — halves KV cache
+                                           # AND saves one KV proj per layer
+    embeddings_tied            = True,     # tie_word_embeddings=true in config
     shared_kv_last_n_layers    = 0,        # num_kv_shared_layers=0 in config
     has_ple                    = False,    # this is the non-PLE variant
     vision_encoder_mb          = 0.0,      # unified — no separate encoder

@@ -46,9 +46,16 @@ class ModelArchitecture(BaseModel):
         num_key_value_heads. Used by Gemma 4-12B (8 on local, 1 on global —
         extreme MQA on the global path).
     kv_unified
-        Whether K and V share storage in the cache (Gemma 4-12B's
-        ``attention_k_eq_v=true``). When true, KV cache memory is halved
-        because only one tensor is stored per token per layer.
+        Whether K and V share storage in the cache AND in the projection
+        weights (Gemma 4-12B's ``attention_k_eq_v=true``). When true, KV
+        cache memory is halved (one tensor per token per layer) and the
+        decoder weight count drops by one KV projection per layer.
+    embeddings_tied
+        Whether the LM-head output projection shares weights with the
+        input token embedding (``tie_word_embeddings`` in HF configs).
+        When true (default), no separate LM head is counted. When false,
+        an additional ``vocab_size × hidden_size`` block is added to the
+        decoder weight count.
     shared_kv_last_n_layers
         Last N layers reuse KV from earlier layers (Gemma4). 0 = all fresh KV.
     has_ple
@@ -118,6 +125,10 @@ class ModelArchitecture(BaseModel):
     global_head_dim:              int   = 0   # 0 = use head_dim on globals too
     num_global_key_value_heads:   int   = 0   # 0 = use num_key_value_heads on globals
     kv_unified:                   bool  = False  # K and V share storage (attention_k_eq_v)
+
+    # LM head
+    embeddings_tied:              bool  = True   # default matches historical behavior:
+                                                 # decoder_params did not include LM head
 
     # Shared KV
     shared_kv_last_n_layers: int   = 0
@@ -218,19 +229,60 @@ class ModelArchitecture(BaseModel):
         return total
 
     def decoder_params(self) -> int:
-        per_q    = self.hidden_size * self.num_attention_heads * self.head_dim
-        per_kv   = self.hidden_size * self.num_key_value_heads * self.head_dim
-        per_o    = self.num_attention_heads * self.head_dim * self.hidden_size
+        """Decoder weight count, including per-layer-type attention geometry,
+        K=V unification, and the LM head when ``embeddings_tied=False``.
+
+        Layer types:
+          * Local (sliding-window) layers: ``head_dim`` × ``num_key_value_heads``.
+          * Global (full-attention) layers: ``global_head_dim`` × ``num_global_key_value_heads``
+            when those are set; falls back to the local values otherwise.
+
+        K=V unification (``kv_unified=True``): the K and V projections produce
+        the same tensor, so only one KV projection is counted per layer.
+
+        Shared-KV tail (``shared_kv_last_n_layers``): the last N layers
+        re-use earlier layers' KV and don't have their own KV projections.
+
+        LM head: added only if ``embeddings_tied=False``. Historical
+        behavior (no LM head) is preserved via the default ``True``.
+        """
+        # Attention weight counts per layer-type
+        local_head_dim   = self.head_dim
+        local_kv_heads   = self.num_key_value_heads
+        global_head_dim  = self.global_head_dim or self.head_dim
+        global_kv_heads  = self.num_global_key_value_heads or self.num_key_value_heads
+        kv_proj_count    = 1 if self.kv_unified else 2
+
+        def attn_block(hd: int, kvh: int, *, has_kv: bool) -> int:
+            per_q  = self.hidden_size * self.num_attention_heads * hd
+            per_kv = self.hidden_size * kvh * hd if has_kv else 0
+            per_o  = self.num_attention_heads * hd * self.hidden_size
+            return per_q + kv_proj_count * per_kv + per_o
+
         per_ffn  = 3 * self.hidden_size * self.intermediate_size
         per_norm = 4 * self.hidden_size
-        fresh    = set(self.fresh_kv_layer_indices())
-        n_fresh  = sum(1 for i in range(self.num_hidden_layers) if i in fresh)
-        n_shared = self.num_hidden_layers - n_fresh
-        return (
-            n_fresh  * (per_q + 2 * per_kv + per_o + per_ffn + per_norm)
-            + n_shared * (per_q           + per_o + per_ffn + per_norm)
-            + self.hidden_size
-        )
+
+        # Sets of layer indices by type and freshness
+        global_set = set(self.global_layer_indices())
+        fresh_set  = set(self.fresh_kv_layer_indices())
+
+        total = 0
+        for i in range(self.num_hidden_layers):
+            is_global = i in global_set
+            has_kv    = i in fresh_set   # shared-KV layers skip the KV projection
+            if is_global:
+                total += attn_block(global_head_dim, global_kv_heads, has_kv=has_kv)
+            else:
+                total += attn_block(local_head_dim, local_kv_heads, has_kv=has_kv)
+            total += per_ffn + per_norm
+
+        total += self.hidden_size  # final norm
+
+        if not self.embeddings_tied:
+            # Untied: LM head is a separate vocab_size × hidden_size matrix
+            total += self.vocab_size * self.hidden_size
+
+        return total
 
     def embedding_params(self) -> int:
         token_emb = self.vocab_size * self.hidden_size

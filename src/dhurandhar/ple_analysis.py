@@ -44,6 +44,7 @@ class MemoryBreakdown(BaseModel):
     mamba_state_mb:          float = 0.0
     vision_encoder_mb:       float
     audio_encoder_mb:        float
+    unified_modality_mb:     float = 0.0
     activations_overhead_mb: float
     runtime_overhead_mb:     float
     context_tokens:          int
@@ -71,6 +72,7 @@ class MemoryBreakdown(BaseModel):
             + self.mamba_state_mb
             + self.vision_encoder_mb
             + audio
+            + self.unified_modality_mb
             + self.activations_overhead_mb
             + self.runtime_overhead_mb
         )
@@ -88,6 +90,7 @@ class MemoryBreakdown(BaseModel):
             + self.mamba_state_mb
             + self.vision_encoder_mb
             + audio
+            + self.unified_modality_mb
             + self.activations_overhead_mb
             + self.runtime_overhead_mb
         )
@@ -145,6 +148,12 @@ class PLEFootprintAnalyzer:
 
         kv_mb        = arch.kv_cache_bytes(context_tokens, kv_bits) / BYTES_PER_MB
         mamba_mb     = arch.mamba_state_bytes() / BYTES_PER_MB
+        # Unified-modality projections share the decoder backbone but add
+        # modality-specific weights. Counted at the same quant precision as
+        # decoder weights (they live alongside them in deployment).
+        unified_modality_mb = (
+            arch.unified_modality_params() * (quant_bits / 8.0) / BYTES_PER_MB
+        )
 
         if quant_bits == 4 and arch.published_decoder_gb > 0:
             decoder_mb = self._best_estimate(decoder_mb, arch.published_decoder_gb * 1024)
@@ -166,6 +175,7 @@ class PLEFootprintAnalyzer:
             mamba_state_mb          = round(mamba_mb, 2),
             vision_encoder_mb       = arch.vision_encoder_mb,
             audio_encoder_mb        = arch.audio_encoder_mb,
+            unified_modality_mb     = round(unified_modality_mb, 2),
             activations_overhead_mb = round(activations_mb, 2),
             runtime_overhead_mb     = arch.runtime_overhead_mb,
             context_tokens          = context_tokens,
@@ -278,6 +288,12 @@ class PLEFootprintAnalyzer:
         rows += [
             ["Vision encoder",                 f"{breakdown.vision_encoder_mb:,.0f} MB",        "bf16"],
             [f"Audio encoder{audio_note}",     f"{audio_mb:,.0f} MB",                           "bf16"],
+        ]
+        if breakdown.unified_modality_mb > 0:
+            rows.append(
+                ["Unified modality weights",  f"{breakdown.unified_modality_mb:,.0f} MB",      f"Q{breakdown.quant_bits} (vision/audio projections)"]
+            )
+        rows += [
             ["Activations (peak)",             f"{breakdown.activations_overhead_mb:,.0f} MB",  ""],
             ["Runtime overhead",               f"{breakdown.runtime_overhead_mb:,.0f} MB",      ""],
         ]

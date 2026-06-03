@@ -116,6 +116,16 @@ GEMMA4_12B = ModelArchitecture(
     has_ple                    = False,    # this is the non-PLE variant
     vision_encoder_mb          = 0.0,      # unified — no separate encoder
     audio_encoder_mb           = 0.0,      # unified — no separate encoder
+    # Unified-modality weights ≈ 0.36 B, the gap between the architectural
+    # decoder+embedding count (11.59 B) and the published 11.95 B. Of that:
+    #   * ~26 M is enumerable from the vision/audio sub-configs (patch
+    #     embedding, position embedding, projections, soft tokens, audio
+    #     feature/output projections)
+    #   * ~334 M is the vision "tower" — the transformer stack over patches
+    #     before projection into the decoder hidden space. The public
+    #     config doesn't enumerate its depth or hidden_size, so it's
+    #     captured here as a single budget rather than reconstructed.
+    unified_modality_params_b  = 0.36,
     weight_dtype_bits          = 16,
     kv_dtype_bits              = 16,
     max_context_tokens         = 131_072,  # max_position_embeddings=128K

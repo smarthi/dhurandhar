@@ -81,9 +81,16 @@ class ModelArchitecture(BaseModel):
     mamba_state_dtype_bits
         Mamba state dtype (32 = float32, required for SSM recurrence stability).
     vision_encoder_mb
-        Vision encoder footprint in MB. 0 if absent.
+        Vision encoder footprint in MB. 0 if absent or unified into the decoder.
     audio_encoder_mb
-        Audio encoder footprint in MB. 0 if absent.
+        Audio encoder footprint in MB. 0 if absent or unified into the decoder.
+    unified_modality_params_b
+        Extra parameter count (in billions) for models with a unified
+        multimodal architecture that share the decoder backbone but add
+        modality-specific projections, patch embeddings, posembs, and
+        soft-token tables (e.g. Gemma 4-12B). 0 for text-only or
+        separate-encoder models. Counted at ``weight_dtype_bits`` precision
+        in the resident/mmap totals.
     published_decoder_gb
         Optional published decoder checkpoint size for cross-checking.
     published_embeddings_gb
@@ -151,8 +158,9 @@ class ModelArchitecture(BaseModel):
     mamba_state_dtype_bits:  int   = 32
 
     # Encoders
-    vision_encoder_mb:       float = 0.0
-    audio_encoder_mb:        float = 0.0
+    vision_encoder_mb:         float = 0.0
+    audio_encoder_mb:          float = 0.0
+    unified_modality_params_b: float = 0.0   # unified multimodal projections / soft tokens
 
     # Published checkpoint sizes
     published_decoder_gb:    float = 0.0
@@ -314,6 +322,16 @@ class ModelArchitecture(BaseModel):
             * self.mamba_state_dim
             * (self.mamba_state_dtype_bits // 8)
         )
+
+    def unified_modality_params(self) -> int:
+        """Parameter count for unified-multimodal projections / soft tokens.
+
+        Counted separately from ``decoder_params()`` because these weights
+        are modality-specific (vision patch embeddings, audio projections,
+        soft-token tables) rather than part of the transformer backbone.
+        For text-only or separate-encoder models this returns 0.
+        """
+        return int(self.unified_modality_params_b * 1e9)
 
     def total_weight_bytes(self, quant_bits: int) -> int:
         """Total weight memory: all experts must be resident even if only a few are active."""

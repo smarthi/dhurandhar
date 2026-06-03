@@ -80,6 +80,39 @@ GEMMA4_E4B = ModelArchitecture(
     runtime_overhead_mb     = 128.0,
 )
 
+# Gemma 4 12B — the standalone (non-PLE) variant announced 2026-06-03 at
+# https://huggingface.co/google/gemma-4-12B. Dense 11.95B params, unified
+# multimodal architecture (no separate vision/audio encoders), 256K context,
+# 1024-token sliding window on local layers. Some fields (hidden_size,
+# intermediate_size, num_attention_heads, num_key_value_heads) are not in
+# the public model card and are estimated from Gemma 3 12B reference values
+# scaled to the Gemma 4 architecture; verify against AutoConfig before
+# trusting absolute decoder/PLE byte counts.
+GEMMA4_12B = ModelArchitecture(
+    name                    = "gemma4-12b",
+    family                  = "gemma",
+    param_count_b           = 11.95,     # fully dense — active == total
+    num_hidden_layers       = 48,
+    num_attention_layers    = 48,
+    hidden_size             = 3840,      # estimate from Gemma 3 12B
+    intermediate_size       = 15360,     # estimate from Gemma 3 12B
+    vocab_size              = 262_144,
+    num_attention_heads     = 16,        # estimate from Gemma 3 12B
+    num_key_value_heads     = 8,         # estimate from Gemma 3 12B
+    head_dim                = 256,       # Gemma 4 family default
+    local_to_global_ratio   = 5,         # 5 local : 1 global, last layer global
+    sliding_window          = 1024,      # confirmed from model card
+    shared_kv_last_n_layers = 0,         # 12B uses "unified KV in global layers"
+                                         # instead of the E-series shared-KV tail
+    has_ple                 = False,     # confirmed — 12B is not a PLE model
+    vision_encoder_mb       = 0.0,       # unified architecture, no separate encoder
+    audio_encoder_mb        = 0.0,       # unified architecture, no separate encoder
+    weight_dtype_bits       = 16,
+    kv_dtype_bits           = 16,
+    max_context_tokens      = 262_144,   # confirmed — 256K
+    runtime_overhead_mb     = 160.0,
+)
+
 # --- Zyphra ZAYA1 (MoE + Mamba hybrid) ---
 
 ZAYA1_8B = ModelArchitecture(
@@ -232,6 +265,7 @@ REGISTRY: dict[str, ModelArchitecture] = {
     m.name: m for m in [
         GEMMA4_E2B,
         GEMMA4_E4B,
+        GEMMA4_12B,
         ZAYA1_8B,
         QWEN25_0_5B,
         QWEN25_1_5B,
@@ -289,6 +323,7 @@ __all__ = [
     # Named instances
     "GEMMA4_E2B",
     "GEMMA4_E4B",
+    "GEMMA4_12B",
     "ZAYA1_8B",
     "QWEN25_0_5B",
     "QWEN25_1_5B",

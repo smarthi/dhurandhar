@@ -38,8 +38,9 @@ from .turboquant import (
 @click.option(
     "--model", "model_name", default="gemma4-e2b",
     help="Model name (built-in slug or path to YAML). "
-         "Built-ins: gemma4-e2b, gemma4-e4b, qwen2.5-0.5b, qwen2.5-1.5b, "
-         "qwen2.5-3b, granite-3.3-2b, llama-3.2-1b, llama-3.2-3b."
+         "Built-ins: gemma4-e2b, gemma4-e4b, gemma4-12b, qwen2.5-0.5b, "
+         "qwen2.5-1.5b, qwen2.5-3b, granite-3.3-2b, llama-3.2-1b, "
+         "llama-3.2-3b, zaya1-8b."
 )
 @click.option(
     "--context-tokens",
@@ -133,7 +134,12 @@ def analyze_ple_cmd(
         click.echo(f"  NPU:              {'yes' if f.device.supports_npu else 'no'}")
         click.secho(f"  Mode:             {f.mode}", fg=status_color)
         click.echo(f"  Headroom:         {f.headroom_mb:>6.1f} MB")
-        click.echo(f"  Flash-bound t/s:  {f.flash_read_bound_tok_per_sec:>6.1f}")
+        flash_tps = (
+            f"{f.flash_read_bound_tok_per_sec:>6.1f}"
+            if f.flash_read_bound_tok_per_sec is not None
+            else "   n/a"
+        )
+        click.echo(f"  Flash-bound t/s:  {flash_tps}")
         click.echo(f"  Notes:            {f.rationale}")
         report["device_assessments"].append(
             {

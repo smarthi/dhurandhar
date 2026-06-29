@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 
-from .config import DEVICE_PROFILES, get_device, list_devices
+from .config import DEVICE_PROFILES
 from .mmap_profiler import MEMORY_BUDGETS_MB, PATTERNS, MmapDecodeProfiler
 from .models import GEMMA4_E2B, get_model
 from .oscarquant import OScaRCodec, OScaRConfig

@@ -4,15 +4,19 @@ Model architecture specs live in dhurandhar.models.
 This module owns only deployment-side configuration that is model-independent:
 target device profiles and quantization presets.
 
-    from dhurandhar.config import DEVICE_PROFILES, DeploymentProfile
+    from dhurandhar.config import get_device, DEVICE_PROFILES, DeploymentProfile
     from dhurandhar.models import get_model
 
     arch   = get_model("gemma4-e2b")
-    device = DEVICE_PROFILES["high_end_mobile_ufs4"]
+    device = get_device("high_end_mobile_ufs4")          # built-in slug
+    device = get_device("configs/my_phone.yaml")         # custom YAML
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
 from pydantic import BaseModel, ConfigDict
 
 
@@ -103,3 +107,51 @@ MEMORY_BUDGET_PRESETS: dict[str, float] = {
     "int8_deployment":  2048,
     "bf16_development": 4096,
 }
+
+
+# ------------------------------------------------------------------ #
+# Device profile loader                                                #
+# ------------------------------------------------------------------ #
+
+
+def list_devices() -> list[str]:
+    """Return sorted list of built-in device profile slugs."""
+    return sorted(DEVICE_PROFILES.keys())
+
+
+def get_device(name_or_path: str) -> DeploymentProfile:
+    """Return a DeploymentProfile by registry slug or YAML path.
+
+    Mirrors :func:`dhurandhar.models.get_model` — accepts either a built-in
+    slug (e.g. ``"high_end_mobile_ufs4"``) or the path to a YAML file whose
+    keys match the :class:`DeploymentProfile` fields.
+
+    Parameters
+    ----------
+    name_or_path
+        Either a key in :data:`DEVICE_PROFILES` or a path to a ``.yaml`` /
+        ``.yml`` file.
+
+    Raises
+    ------
+    KeyError
+        If the slug is not in the registry and the path does not exist.
+
+    Examples
+    --------
+    >>> dev = get_device("high_end_mobile_ufs4")
+    >>> dev = get_device("configs/pixel_10_pro.yaml")
+    """
+    if name_or_path in DEVICE_PROFILES:
+        return DEVICE_PROFILES[name_or_path]
+    path = Path(name_or_path)
+    if path.exists() and path.suffix in (".yaml", ".yml"):
+        with path.open() as f:
+            data = yaml.safe_load(f)
+        return DeploymentProfile(**data)
+    raise KeyError(
+        f"Unknown device {name_or_path!r}. "
+        f"Built-ins: {list_devices()}. "
+        f"Or pass a path to a YAML file with DeploymentProfile fields "
+        f"(name, ram_budget_mb, flash_read_gbps, supports_npu, notes)."
+    )

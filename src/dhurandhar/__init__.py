@@ -8,7 +8,7 @@ multimodal models on memory-constrained edge devices.
 Public API
 ----------
     from dhurandhar.models import get_model, list_models
-    from dhurandhar.config import DEVICE_PROFILES, DeploymentProfile
+    from dhurandhar.config import get_device, list_devices, DeploymentProfile
     from dhurandhar.ple_analysis import PLEFootprintAnalyzer
     from dhurandhar.turboquant import TurboQuantCodec, KVCacheCompressor
     from dhurandhar.rotorquant import RotorQuantCodec
@@ -28,6 +28,8 @@ from .config import (
     QUANT_PRESETS,
     DeploymentProfile,
     QuantizationProfile,
+    get_device,
+    list_devices,
 )
 from .finetune import (
     FinetuneJobConfig,
@@ -59,6 +61,8 @@ __all__ = [
     # Config
     "DEVICE_PROFILES",
     "DeploymentProfile",
+    "get_device",
+    "list_devices",
     "DEFAULT_QUANT",
     "QuantizationProfile",
     "QUANT_PRESETS",

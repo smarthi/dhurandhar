@@ -1,0 +1,30 @@
+# Sample device profile: Pixel 10 Pro (Tensor G5, UFS 4.0)
+#
+# Usage:
+#   dhurandhar-analyze-ple --model gemma4-e2b --device configs/pixel_10_pro.yaml
+#
+# Or from Python:
+#   from dhurandhar.config import get_device
+#   from dhurandhar.models import get_model
+#   from dhurandhar.ple_analysis import PLEFootprintAnalyzer
+#
+#   device = get_device("configs/pixel_10_pro.yaml")
+#   PLEFootprintAnalyzer(get_model("gemma4-e2b")).assess_device(device)
+#
+# Schema (DeploymentProfile):
+#   name             — human-readable label (required)
+#   ram_budget_mb    — process RSS budget in MB (required). NOT total device RAM.
+#                      Subtract OS + other-app overhead from total physical RAM.
+#   flash_read_gbps  — sustained sequential-read bandwidth in GB/s (required).
+#                      UFS 4.0 ≈ 4.2, UFS 3.1 ≈ 2.0, eMMC 5.1 ≈ 0.4, NVMe Gen4 ≈ 7.0
+#   supports_npu     — bool, whether the SoC has a usable NPU (default: false)
+#   notes            — free-form context (default: "")
+
+name: Pixel 10 Pro (Tensor G5, UFS 4.0)
+ram_budget_mb: 3072
+flash_read_gbps: 4.2
+supports_npu: true
+notes: >
+  Process-RSS budget assumes a 12 GB device with Android system services and
+  at least one background app resident. Verify with on-device measurement
+  before committing to this number.

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 
-from .config import DEVICE_PROFILES
+from .config import DEVICE_PROFILES, get_device, list_devices
 from .mmap_profiler import MEMORY_BUDGETS_MB, PATTERNS, MmapDecodeProfiler
 from .models import GEMMA4_E2B, get_model
 from .oscarquant import OScaRCodec, OScaRConfig
@@ -57,9 +57,14 @@ from .turboquant import (
 )
 @click.option(
     "--device",
-    type=click.Choice(sorted(DEVICE_PROFILES.keys())),
+    type=str,
     default=None,
-    help="Assess a specific device; omit to print breakdown for all profiles.",
+    help=(
+        "Assess a specific device. Accepts a built-in slug or a path to a "
+        "YAML device profile (DeploymentProfile schema). "
+        f"Built-ins: {', '.join(sorted(DEVICE_PROFILES.keys()))}. "
+        "Omit to print breakdown for all built-in profiles."
+    ),
 )
 @click.option(
     "--target-decode-tps",

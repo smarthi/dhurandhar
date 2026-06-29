@@ -155,7 +155,8 @@ architecture review decks.
 ### 2. TurboQuant KV cache compression benchmark
 
 ```bash
-dhurandhar-benchmark-kv --model gemma4-e2b --seq-len 32768 --residual-bits 4
+dhurandhar-benchmark-kv --head-dim 256 --num-kv-heads 4 --num-layers 30 \
+                        --shared-kv-last-n 6 --seq-len 32768 --residual-bits 4
 ```
 
 ```
@@ -204,14 +205,14 @@ flash. The profiler is designed to run on target silicon during the
 feasibility phase — the methodology and code port directly, only the
 measurement environment changes.
 
-### 4. Codec comparison: TurboQuant vs RotorQuant
+### 4. Codec comparison: TurboQuant vs SpectralQuant vs OScaR
 
 ```bash
-dhurandhar-compare-codecs --head-dim 255 --seq-len 2048 \
-                           --residual-bits 2,3,4,6,8
+dhurandhar-compare-codecs --head-dim 256 --seq-len 2048 \
+                           --bits 2,3,4,6,8
 
 # JSON output for archival
-dhurandhar-compare-codecs --head-dim 255 --json-out codec_comparison.json
+dhurandhar-compare-codecs --head-dim 256 --json-out codec_comparison.json
 ```
 
 ### 5. Codec comparison: TurboQuant vs SpectralQuant
@@ -353,17 +354,96 @@ print(cfg.num_hidden_layers, cfg.hidden_size, cfg.num_key_value_heads, cfg.head_
 
 ## Bring your own device
 
+Device profiles work the same way as model profiles — register one as YAML
+and pass the path to any API or CLI that accepts a `--device`:
+
+```yaml
+# configs/pixel_10_pro.yaml
+name: Pixel 10 Pro (Tensor G5, UFS 4.0)
+ram_budget_mb: 3072       # process RSS budget — NOT total device RAM
+flash_read_gbps: 4.2      # UFS 4.0 sustained sequential read
+supports_npu: true
+notes: >
+  Process-RSS budget assumes a 12 GB device with Android system services
+  and at least one background app resident.
+```
+
+```bash
+dhurandhar-analyze-ple --model gemma4-e2b \
+                        --device configs/pixel_10_pro.yaml \
+                        --context-tokens 32768
+```
+
+```python
+from dhurandhar.config import get_device
+from dhurandhar.models import get_model
+from dhurandhar.ple_analysis import PLEFootprintAnalyzer
+
+analyzer = PLEFootprintAnalyzer(get_model("gemma4-e2b"))
+verdict  = analyzer.assess_device("configs/pixel_10_pro.yaml")
+# or pass a built-in slug, or a pre-built DeploymentProfile:
+verdict  = analyzer.assess_device("high_end_mobile_ufs4")
+verdict  = analyzer.assess_device(get_device("configs/pixel_10_pro.yaml"))
+```
+
+### Schema
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | str | yes | Human-readable label (shown in reports & dashboard) |
+| `ram_budget_mb` | float | yes | Process-RSS budget in MB. Subtract OS + other-app overhead from total device RAM |
+| `flash_read_gbps` | float | yes | Sustained sequential-read bandwidth (NOT peak burst). UFS 4.0 ≈ 4.2, UFS 3.1 ≈ 2.0, eMMC 5.1 ≈ 0.4, NVMe Gen4 ≈ 7.0 |
+| `supports_npu` | bool | no (default `False`) | Whether the SoC has a usable NPU for INT4/INT8 GEMM |
+| `notes` | str | no (default `""`) | Free-form context — measurement source, SKU, date |
+
+A worked example lives at [configs/pixel_10_pro.yaml](configs/pixel_10_pro.yaml).
+
+### A tier of three custom profiles
+
+You can also register multiple profiles programmatically — useful when
+generating a fleet matrix or constructing devices from CSV/SKU data
+without writing one YAML per SKU:
+
 ```python
 from dhurandhar.config import DEVICE_PROFILES, DeploymentProfile
 
-DEVICE_PROFILES["snapdragon_8_gen4"] = DeploymentProfile(
-    name="Snapdragon 8 Gen 4 (UFS 4.0)",
-    ram_budget_mb=3072,
-    flash_read_gbps=4.5,
-    supports_npu=True,
-    notes="Measured on <device> on <date>. Update with real RSS budget.",
-)
+DEVICE_PROFILES.update({
+    "raspberry_pi_5_8gb": DeploymentProfile(
+        name="Raspberry Pi 5 (8 GB, SD card class A2)",
+        ram_budget_mb=4096,         # 8 GB device, 4 GB process budget
+        flash_read_gbps=0.09,       # SD class A2 sustained — slow path
+        supports_npu=False,
+        notes="Hobbyist / prototyping target. SD-bound mmap throughput "
+              "will dominate decode latency; consider USB-NVMe for production.",
+    ),
+    "jetson_orin_nano_8gb": DeploymentProfile(
+        name="Jetson Orin Nano (8 GB, NVMe SSD)",
+        ram_budget_mb=5120,
+        flash_read_gbps=3.5,        # NVMe Gen3 on Orin Nano carrier
+        supports_npu=True,          # Ampere GPU + DLA
+        notes="Edge inference target. GPU + DLA provide INT8 GEMM kernels; "
+              "decode is more likely activation- than mmap-bound.",
+    ),
+    "automotive_qnx_emmc": DeploymentProfile(
+        name="Automotive head-unit (QNX, eMMC 5.1)",
+        ram_budget_mb=2048,
+        flash_read_gbps=0.4,
+        supports_npu=False,
+        notes="ASIL-B platform. RAM is tight and flash is slow — most "
+              "PLE-bearing models will be infeasible without aggressive "
+              "quantization. Use this profile as the worst-case gate.",
+    ),
+})
 ```
+
+### Caveat — RAM budget is process RSS, not device RAM
+
+Don't put the device's total physical RAM into `ram_budget_mb`. On a
+12 GB Android phone the actual process RSS budget at app-launch time
+is closer to 2–4 GB after the OS, system services, and at least one
+backgrounded app. Use a measured RSS envelope from your target SKU,
+or err on the conservative side. The dashboard's "custom device" row
+makes the same assumption.
 
 ---
 
@@ -389,7 +469,7 @@ src/dhurandhar/
 ├── models/
 │   ├── _base.py       # ModelArchitecture Pydantic model — the central contract
 │   └── __init__.py    # Built-in registry + get_model() / list_models()
-├── config.py          # DeploymentProfile registry + QuantizationProfile
+├── config.py          # DeploymentProfile registry + YAML loader + QuantizationProfile
 ├── ple_analysis.py    # PLE memory math + per-device feasibility (analytical)
 ├── mmap_profiler.py   # Real mmap decode throughput + peak RSS probe (empirical)
 ├── turboquant.py      # TurboQuant codec (Hadamard + sign + residual)
@@ -638,7 +718,7 @@ Tests cover:
 ## Status and caveats
 
 **Validated:**
-- All 90 unit tests pass (Python 3.11, torch 2.5+, numpy 2.x)
+- All 115 unit tests pass (Python 3.11, torch 2.5+, numpy 2.x)
 - CLI tools produce output consistent with published LiteRT-LM checkpoint
   sizes (decoder = 0.79 GB, embeddings = 1.12 GB)
 - TurboQuant delivers 4.57× compression at 0.997 cos-sim on synthetic

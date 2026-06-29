@@ -114,6 +114,28 @@ def test_unknown_device_raises() -> None:
         analyzer.assess_device("nonexistent_device")
 
 
+def test_assess_accepts_deployment_profile_directly() -> None:
+    """assess_device should accept a pre-built DeploymentProfile, not just a slug."""
+    from dhurandhar.config import DeploymentProfile
+
+    analyzer = PLEFootprintAnalyzer(GEMMA4_E2B)
+    profile = DeploymentProfile(
+        name="ad-hoc test device",
+        ram_budget_mb=2048,
+        flash_read_gbps=4.2,
+        supports_npu=True,
+    )
+    f = analyzer.assess_device(profile)
+    assert f.mode in {"resident", "mmap", "infeasible"}
+    assert f.device.name == "ad-hoc test device"
+
+
+def test_assess_rejects_bad_type() -> None:
+    analyzer = PLEFootprintAnalyzer(GEMMA4_E2B)
+    with pytest.raises(TypeError, match="DeploymentProfile"):
+        analyzer.assess_device(42)  # type: ignore[arg-type]
+
+
 def test_kv_cache_scales_with_context() -> None:
     analyzer = PLEFootprintAnalyzer(GEMMA4_E2B)
     b_short = analyzer.compute_breakdown(context_tokens=2048)

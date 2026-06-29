@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from .config import DEVICE_PROFILES, DeploymentProfile
+from .config import DeploymentProfile, get_device
 from .models._base import ModelArchitecture
 
 BYTES_PER_MB = 1024 * 1024
@@ -194,7 +194,7 @@ class PLEFootprintAnalyzer:
 
     def assess_device(
         self,
-        device_key: str,
+        device: str | DeploymentProfile,
         *,
         context_tokens: int = 32_768,
         quant_bits: int = 4,
@@ -202,13 +202,23 @@ class PLEFootprintAnalyzer:
         strip_audio: bool = True,
         decode_tokens_per_sec_target: float = 15.0,
     ) -> DeviceFeasibility:
-        if device_key not in DEVICE_PROFILES:
-            raise KeyError(
-                f"Unknown device {device_key!r}. "
-                f"Available: {sorted(DEVICE_PROFILES.keys())}"
+        """Assess feasibility on a device.
+
+        Parameters
+        ----------
+        device
+            Either a built-in slug (e.g. ``"high_end_mobile_ufs4"``), a path
+            to a YAML device profile, or a pre-built ``DeploymentProfile``.
+            Strings are resolved through :func:`dhurandhar.config.get_device`.
+        """
+        if isinstance(device, str):
+            device = get_device(device)
+        elif not isinstance(device, DeploymentProfile):
+            raise TypeError(
+                f"device must be a slug, YAML path, or DeploymentProfile; "
+                f"got {type(device).__name__}"
             )
 
-        device    = DEVICE_PROFILES[device_key]
         breakdown = self.compute_breakdown(
             context_tokens=context_tokens,
             quant_bits=quant_bits,

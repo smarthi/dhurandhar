@@ -68,11 +68,22 @@ All seven analyses are exposed as a **CLI**, a **Python API**, and a
 | `llama-3.2-1b` | Llama 3.2 | 1B | ❌ | ❌ |
 | `llama-3.2-3b` | Llama 3.2 | 3B | ❌ | ❌ |
 | `zaya1-8b` | ZAYA | 8.4B (0.76B active) | ❌ | MoE+Mamba |
+| `deepseek-v4-flash`¹ | DeepSeek | 284B (13B active) | ❌ | MoE, CSA+HCA |
 
 MoE and Mamba/SSM hybrid architectures are fully supported. For MoE models,
 all expert weights are accounted as resident memory (not just the active
 subset). For Mamba models, the SSM recurrent state (float32, unquantizable)
 is included in the memory breakdown.
+
+¹ `deepseek-v4-flash` is a **codec-benchmark-only** entry — it feeds the
+KV-cache quant codec quality sweeps (TurboQuant/SpectralQuant/OScaR/
+RotorQuant), which only need `head_dim`/`num_key_value_heads`. It is not
+PLE-bearing and not edge-feasible (284B total params, H100/H200-class
+hardware), so don't run `ple_analysis` or the `mmap_profiler` against it,
+and don't trust its `kv_cache_bytes()`/`decoder_params()` aggregate output —
+its real per-layer attention schedule (alternating 4x/128x KV compression)
+isn't representable in this schema. See the comment above the entry in
+`src/dhurandhar/models/__init__.py` for the full caveat.
 
 Any model can be added via a [YAML profile](#bring-your-own-model) — no
 code required.

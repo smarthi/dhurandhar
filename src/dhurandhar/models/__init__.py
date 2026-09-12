@@ -276,6 +276,62 @@ LLAMA_3_2_3B = ModelArchitecture(
     runtime_overhead_mb     = 96.0,
 )
 
+# --- DeepSeek V4 Flash (MoE, cloud-scale — codec-benchmark entry only) ---
+#
+# SCOPE: included solely for the architecture-agnostic KV-cache quant
+# codec benchmarks (TurboQuant/SpectralQuant/OScaR/RotorQuant quality
+# sweeps in scripts/generate_*_report.py), which only consume head_dim
+# and num_key_value_heads to synthesize a per-head KV tensor. This is
+# NOT a PLE model and is NOT edge-feasible (284B total params, targets
+# H100/H200-class hardware) — do not point ple_analysis or
+# mmap_profiler at this entry; it will produce numbers with no real-
+# world meaning for those tools' intended (on-device) use case.
+#
+# SIMPLIFICATION: local_to_global_ratio / sliding_window are left at 0
+# ("all global/full-context"). The real per-layer attention schedule is
+# compress_ratios = [0, 0, (4, 128) × 20, 0] — two dense layers, then
+# 40 layers alternating Compressed Sparse Attention (4x temporal
+# compression, top-k entries only) and Hierarchical Compressed
+# Attention (128x temporal compression, dense over all entries), then
+# one closing dense layer. Neither CSA nor HCA hard-truncates like a
+# sliding window — both attend across the full context in compressed
+# form — so this ModelArchitecture schema cannot represent the real
+# schedule. Consequence: kv_cache_bytes() / decoder_params() aggregate
+# estimates for this entry are UNVALIDATED and should not be quoted;
+# only the head_dim/num_key_value_heads-driven codec-quality sweeps are
+# accurate, since those never touch the hybrid-attention fields.
+# MoE weight accounting: decoder_params() does not multiply per-layer
+# FFN width by num_experts (same pre-existing limitation as ZAYA1_8B
+# above) — param_count_b/active_param_count_b are the authoritative
+# scale figures, intermediate_size here is the per-expert
+# (moe_intermediate_size) width, kept for shape-correctness only.
+#
+# Source: deepseek-ai/DeepSeek-V4-Flash config.json (HF, GA 0731 build).
+DEEPSEEK_V4_FLASH = ModelArchitecture(
+    name                    = "deepseek-v4-flash",
+    family                  = "deepseek",
+    param_count_b           = 284.0,     # total; 13B active per token
+    active_param_count_b    = 13.0,
+    num_hidden_layers       = 43,
+    num_attention_layers    = 43,
+    hidden_size             = 4096,
+    intermediate_size       = 2048,      # moe_intermediate_size (per-expert FFN)
+    vocab_size              = 129_280,
+    num_attention_heads     = 64,
+    num_key_value_heads     = 1,         # near-MQA at the cached-KV level
+    head_dim                = 512,
+    is_moe                  = True,
+    num_experts             = 257,       # 256 routed + 1 always-on shared expert
+    num_active_experts      = 7,         # top-6 routed + 1 shared
+    weight_dtype_bits       = 16,        # bf16 reference baseline (matches every
+                                          # other registry entry); deployed
+                                          # checkpoint ships mixed FP4 (experts) /
+                                          # FP8 (rest) — not representable here
+    kv_dtype_bits           = 16,
+    max_context_tokens      = 1_048_576,
+    runtime_overhead_mb     = 256.0,
+)
+
 # ------------------------------------------------------------------ #
 # Registry                                                             #
 # ------------------------------------------------------------------ #
@@ -292,6 +348,7 @@ REGISTRY: dict[str, ModelArchitecture] = {
         GRANITE_3_3_2B,
         LLAMA_3_2_1B,
         LLAMA_3_2_3B,
+        DEEPSEEK_V4_FLASH,
     ]
 }
 
@@ -350,4 +407,5 @@ __all__ = [
     "GRANITE_3_3_2B",
     "LLAMA_3_2_1B",
     "LLAMA_3_2_3B",
+    "DEEPSEEK_V4_FLASH",
 ]

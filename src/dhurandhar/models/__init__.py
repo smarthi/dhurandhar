@@ -132,6 +132,51 @@ GEMMA4_12B = ModelArchitecture(
     runtime_overhead_mb        = 160.0,
 )
 
+# --- EmbeddingGemma 2 ---
+
+# EmbeddingGemma 2 — multimodal embedding model (text + image + video + audio
+# into one 768-d space). Values from the published config.json at
+# https://huggingface.co/google/embeddinggemma-2 (model_type=embedding_gemma2,
+# dtype=bf16, transformers_version=5.18.0.dev0). Notes:
+#   * text backbone: 24 layers, layer_types = 5 sliding : 1 full (full at
+#     layers 5/11/17/23), matching local_to_global_ratio=5
+#   * global layers override to head_dim=512, num_kv_heads=1 (per_layer_config)
+#   * hidden_size_per_layer_input=512 is present in text_config, but the
+#     card's 270M text backbone (130M transformer + 140M embedder) leaves no
+#     room for a Gemma-4-style PLE table (262144 x 24 x 512 = 3.2B), so
+#     has_ple=False; the 140M "embedder" is just vocab x hidden (262144x512)
+#   * attention is bidirectional (encoder); kv_cache_bytes() is therefore only
+#     an upper bound on transient activation memory, not a decode-time cache
+#   * 740M total = 270M text + 170M vision (16 layers) + 300M audio (12 layers);
+#     encoder MB below are those param counts at bf16 (x2 bytes)
+#   * max_position_embeddings=262144 in config; the model card quotes an
+#     8,192-token context window — the config value is used here
+#   * native embedding dim 768 (MRL truncation to 512/256/128)
+EMBEDDINGGEMMA2 = ModelArchitecture(
+    name                       = "embeddinggemma2",
+    family                     = "gemma",
+    param_count_b              = 0.74,
+    num_hidden_layers          = 24,
+    num_attention_layers       = 24,
+    hidden_size                = 512,
+    intermediate_size          = 2048,
+    vocab_size                 = 262_144,
+    num_attention_heads        = 4,
+    num_key_value_heads        = 2,        # local-layer KV heads
+    head_dim                   = 256,      # local-layer head_dim
+    local_to_global_ratio      = 5,
+    sliding_window             = 512,
+    global_head_dim            = 512,
+    num_global_key_value_heads = 1,
+    has_ple                    = False,
+    vision_encoder_mb          = 340.0,    # 170M params @ bf16
+    audio_encoder_mb           = 600.0,    # 300M params @ bf16
+    weight_dtype_bits          = 16,
+    kv_dtype_bits              = 16,
+    max_context_tokens         = 262_144,
+    runtime_overhead_mb        = 64.0,
+)
+
 # --- Zyphra ZAYA1 (MoE + Mamba hybrid) ---
 
 ZAYA1_8B = ModelArchitecture(
@@ -341,6 +386,7 @@ REGISTRY: dict[str, ModelArchitecture] = {
         GEMMA4_E2B,
         GEMMA4_E4B,
         GEMMA4_12B,
+        EMBEDDINGGEMMA2,
         ZAYA1_8B,
         QWEN25_0_5B,
         QWEN25_1_5B,
@@ -400,6 +446,7 @@ __all__ = [
     "GEMMA4_E2B",
     "GEMMA4_E4B",
     "GEMMA4_12B",
+    "EMBEDDINGGEMMA2",
     "ZAYA1_8B",
     "QWEN25_0_5B",
     "QWEN25_1_5B",

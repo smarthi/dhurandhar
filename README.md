@@ -61,6 +61,7 @@ All seven analyses are exposed as a **CLI**, a **Python API**, and a
 | `gemma4-e2b` | Gemma 4 | 5.1B (2.3B active) | ✅ | ✅ local/global |
 | `gemma4-e4b` | Gemma 4 | 9B | ✅ | ✅ local/global |
 | `gemma4-12b` | Gemma 4 | 11.95B (dense) | ❌ | ✅ local/global, K=V, 128K ctx |
+| `embeddinggemma2` | Gemma | 0.74B (text+vision+audio embedder) | ❌ | ✅ local/global |
 | `qwen2.5-0.5b` | Qwen 2.5 | 0.5B | ❌ | ❌ |
 | `qwen2.5-1.5b` | Qwen 2.5 | 1.5B | ❌ | ❌ |
 | `qwen2.5-3b` | Qwen 2.5 | 3B | ❌ | ❌ |

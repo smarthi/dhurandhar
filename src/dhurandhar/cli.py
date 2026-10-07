@@ -38,7 +38,7 @@ from .turboquant import (
 @click.option(
     "--model", "model_name", default="gemma4-e2b",
     help="Model name (built-in slug or path to YAML). "
-         "Built-ins: gemma4-e2b, gemma4-e4b, gemma4-12b, qwen2.5-0.5b, "
+         "Built-ins: gemma4-e2b, gemma4-e4b, gemma4-12b, embeddinggemma2, qwen2.5-0.5b, "
          "qwen2.5-1.5b, qwen2.5-3b, granite-3.3-2b, llama-3.2-1b, "
          "llama-3.2-3b, zaya1-8b."
 )
